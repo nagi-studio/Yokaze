@@ -14,7 +14,13 @@ use tokio::net::UnixStream;
 
 use crate::remote::{self, Command, Snapshot, SpectrumFrame, SPECTRUM_PROTOCOL_VERSION};
 
-const GUI_SOCKET: &str = "/tmp/com_electron_yesplaymusic_ctl.sock";
+/// Newest first. GUIs before the bundle id change (0.13 and earlier) only
+/// listen on the legacy path, and ypm ships through Homebrew on its own
+/// schedule, so either side may be the older one.
+const GUI_SOCKETS: [&str; 2] = [
+    "/tmp/fun_nagi_yokaze_ctl.sock",
+    "/tmp/com_electron_yesplaymusic_ctl.sock",
+];
 const GUI_PLAYER_URL: &str = "http://127.0.0.1:27232/player";
 const PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 
@@ -56,7 +62,7 @@ pub async fn run(command: Command, forced: Option<Target>, json: bool) -> Result
 
     match target {
         Target::Gui => {
-            request(GUI_SOCKET, command)
+            request_gui(command)
                 .await
                 .context("GUI 播放器未响应控制命令")?;
         }
@@ -207,7 +213,10 @@ fn clock(ms: u64) -> String {
 }
 
 async fn request(path: &str, command: Command) -> Result<Value> {
-    let stream = UnixStream::connect(path).await?;
+    exchange(UnixStream::connect(path).await?, command).await
+}
+
+async fn exchange(stream: UnixStream, command: Command) -> Result<Value> {
     let (reader, mut writer) = stream.into_split();
     let mut payload = serde_json::to_string(&command)?;
     payload.push('\n');
@@ -219,6 +228,17 @@ async fn request(path: &str, command: Command) -> Result<Value> {
         bail!("播放器拒绝了命令：{reply}");
     }
     Ok(value)
+}
+
+async fn request_gui(command: Command) -> Result<Value> {
+    let mut last_error = None;
+    for path in GUI_SOCKETS {
+        match UnixStream::connect(path).await {
+            Ok(stream) => return exchange(stream, command).await,
+            Err(error) => last_error = Some(error),
+        }
+    }
+    Err(last_error.expect("GUI_SOCKETS is not empty").into())
 }
 
 async fn status_tui() -> Result<Snapshot> {

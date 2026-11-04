@@ -1,8 +1,9 @@
 ; Yokaze shipped as YesPlayMusic up to v0.12. Tauri derives the install
 ; directory and the uninstall entry from the product name, so after the
 ; rename an update installs side by side with the old copy; remove it.
-; The old uninstaller keeps app data (keyed by the unchanged identifier)
-; unless the user ticks a checkbox that silent mode never shows.
+; The old uninstaller keeps app data unless the user ticks a checkbox that
+; silent mode never shows; the app moves that data to the new identifier on
+; first launch (src-tauri/src/identity_migration.rs).
 !define YOKAZE_LEGACY_UNINSTKEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\YesPlayMusic"
 
 !macro NSIS_HOOK_POSTINSTALL

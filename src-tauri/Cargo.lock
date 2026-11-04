@@ -9149,6 +9149,7 @@ name = "yesplaymusic-tauri"
 version = "0.13.1"
 dependencies = [
  "cookie",
+ "dirs",
  "discord-rich-presence",
  "futures-lite",
  "getrandom 0.2.17",

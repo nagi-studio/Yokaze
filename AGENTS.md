@@ -143,17 +143,21 @@ Discord Rich Presence 都由 `src-tauri/src/` 的 Rust 实现。
 ## 数据目录（容易搞错）
 
 dev 是未打包的二进制，WebKit 按进程名 `yesplaymusic-tauri` 存数据；正式版按 bundle id
-`com.electron.yesplaymusic` 存。两边的 cookie、localStorage 设置、IndexedDB 歌曲缓存
+`fun.nagi.yokaze` 存。两边的 cookie、localStorage 设置、IndexedDB 歌曲缓存
 **全部不共用**，dev 要单独登录。
 
 - dev：`~/Library/WebKit/yesplaymusic-tauri/`、`~/Library/Caches/yesplaymusic-tauri/`、
   `~/Library/HTTPStorages/yesplaymusic-tauri.binarycookies`，清 dev 数据只删这三处
-- 正式版：同样三处，名字换成 `com.electron.yesplaymusic`
+- 正式版：同样三处，名字换成 `fun.nagi.yokaze`
+- v0.13 及更早的 bundle id 是从 Electron 版继承的 `com.electron.yesplaymusic`。
+  `src-tauri/src/identity_migration.rs` 在建窗口前把旧 id 下的数据整目录 rename 过来
+  （WebKit 的 origin 目录名由目录内的 salt 算出，整目录搬才认得），旧版还开着就把这次启动交给它。
+  ypm 的 `ctl.rs` 和 GUI 的控制 socket 同时认新旧两个路径，因为 brew 版 ypm 和 GUI 不同步升级
 - `~/Library/Application Support/YesPlayMusic/` 是旧 Electron 版的数据，
   `legacy_renderer_data.rs` 首次启动时从这里迁移，不要删
 
 改名 Yokaze 时**故意保留**了这些旧名字，它们是数据位置或内部协议，不是品牌，改了会丢数据：
-bundle id `com.electron.yesplaymusic`、`mainBinaryName` `yesplaymusic-tauri`、sidecar 二进制名、
+`mainBinaryName` `yesplaymusic-tauri`、sidecar 二进制名、
 IndexedDB 库名 `yesplaymusic`（`src/utils/db.ts`）、`X-YesPlayMusic-*` 内部 header，
 以及 crate 名 `yesplaymusic-core` / `yesplaymusic-tui`（只是内部名字，暂未改）。
 `ypm` 读作 Yokaze Player for Music，不要再写成 YesPlayMusic 的缩写。

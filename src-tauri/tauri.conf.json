@@ -2,7 +2,7 @@
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Yokaze",
   "version": "0.13.1",
-  "identifier": "com.electron.yesplaymusic",
+  "identifier": "fun.nagi.yokaze",
   "mainBinaryName": "yesplaymusic-tauri",
   "build": {
     "beforeDevCommand": "bun run build:sidecar:dev && bun run dev:tauri:renderer",
@@ -30,6 +30,7 @@
   },
   "bundle": {
     "active": true,
+    "publisher": "Nagi Studio",
     "createUpdaterArtifacts": false,
     "targets": ["app"],
     "category": "Music",

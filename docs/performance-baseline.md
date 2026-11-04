@@ -79,7 +79,7 @@ CPU 回归：
 
 高强度交互（连续切歌、搜索、调窗口）时 WebContent 峰值约 49% CPU、GPU 进程约
 67%，操作结束后均回落。RSS 含大量共享页，不作为对外数字；对外只引用
-phys_footprint 与场景说明。用户缓存（`~/Library/WebKit/com.electron.yesplaymusic`
+phys_footprint 与场景说明。用户缓存（`~/Library/WebKit/fun.nagi.yokaze`
 等）随使用增长，与安装体积分开陈述。
 
 ## Rust-only installed 实测（2026-08-11，`0.8.0-canary.1`）

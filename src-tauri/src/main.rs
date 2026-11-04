@@ -5,6 +5,7 @@
 
 mod desktop_preferences;
 mod discord_presence;
+mod identity_migration;
 mod legacy_renderer_data;
 #[cfg(target_os = "linux")]
 mod linux_media;
@@ -248,7 +249,10 @@ mod updater_target_tests {
 
 #[cfg(all(test, target_os = "macos"))]
 mod macos_startup_gate_tests {
-    use super::{acquire_macos_startup_gate, single_instance_socket_path, startup_gate_path};
+    use super::{
+        acquire_macos_startup_gate, control_socket_path, single_instance_socket_path,
+        startup_gate_path,
+    };
     use std::{sync::mpsc, thread, time::Duration};
 
     #[test]
@@ -271,11 +275,15 @@ mod macos_startup_gate_tests {
     #[test]
     fn paths_match_the_locked_single_instance_plugin_contract() {
         assert_eq!(
-            single_instance_socket_path("com.electron.yesplaymusic"),
-            std::path::PathBuf::from("/tmp/com_electron_yesplaymusic_si.sock")
+            single_instance_socket_path("fun.nagi.yokaze"),
+            std::path::PathBuf::from("/tmp/fun_nagi_yokaze_si.sock")
         );
-        assert!(startup_gate_path("com.electron.yesplaymusic")
-            .ends_with("com_electron_yesplaymusic_startup.lock"));
+        assert!(startup_gate_path("fun.nagi.yokaze").ends_with("fun_nagi_yokaze_startup.lock"));
+        // ypm's GUI_SOCKETS (src-tauri/tui/src/ctl.rs) hardcodes both.
+        assert_eq!(
+            control_socket_path("fun.nagi.yokaze"),
+            std::path::PathBuf::from("/tmp/fun_nagi_yokaze_ctl.sock")
+        );
     }
 }
 
@@ -1131,9 +1139,18 @@ fn emit_desktop_event(app: &AppHandle, event: &str) {
 /// words are shared with src-tauri/tui/src/remote.rs.
 #[cfg(target_os = "macos")]
 fn spawn_control_socket(app: AppHandle) {
+    let current = control_socket_path(&app.config().identifier);
+    // Homebrew ypm releases lag the app; older ones only know the legacy path.
+    let legacy = control_socket_path(identity_migration::LEGACY_IDENTIFIER);
+    for path in [current, legacy] {
+        spawn_control_listener(app.clone(), path);
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn spawn_control_listener(app: AppHandle, path: PathBuf) {
     use std::os::unix::net::UnixListener;
 
-    let path = control_socket_path(&app.config().identifier);
     // Single-instance already serialized us, so an existing socket file can
     // only be a leftover from a dead process.
     if path.exists() && fs::remove_file(&path).is_err() {
@@ -1142,7 +1159,10 @@ fn spawn_control_socket(app: AppHandle) {
     let listener = match UnixListener::bind(&path) {
         Ok(listener) => listener,
         Err(error) => {
-            eprintln!("[tauri] control socket unavailable: {error}");
+            eprintln!(
+                "[tauri] control socket {} unavailable: {error}",
+                path.display()
+            );
             return;
         }
     };
@@ -2807,6 +2827,20 @@ fn main() {
         SINGLE_INSTANCE_STARTUP_TIMEOUT,
     )
     .expect("failed to serialize macOS cold startup");
+
+    match identity_migration::run(&context.config().identifier) {
+        identity_migration::Outcome::LegacyRunning => {
+            // Two copies would fight over the sidecar ports.
+            eprintln!("[identity-migration] the previous version is still running");
+            #[cfg(target_os = "macos")]
+            identity_migration::activate_legacy_instance();
+            return;
+        }
+        identity_migration::Outcome::Failed(error) => {
+            eprintln!("[identity-migration] rolled back, retrying next launch: {error}");
+        }
+        identity_migration::Outcome::Settled | identity_migration::Outcome::Migrated => {}
+    }
 
     let app = tauri::Builder::default()
         .menu(create_app_menu)

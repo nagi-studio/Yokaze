@@ -17,6 +17,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 cookie = "0.18.1"
 discord-rich-presence = "1.1.0"
+dirs = "=6.0.0"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
 getrandom = "0.2"
 leveldb-core = "0.1.2"
