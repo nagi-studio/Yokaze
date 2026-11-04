@@ -5,6 +5,7 @@ import { getAppStore } from '@/stores/accessor';
 import { normalizePersistedLocale } from '@/locale/catalog';
 import type { LocaleCode } from '@/locale/catalog';
 import type { Track, TrackPrivilege } from '@/types/domain';
+import { sendDesktop } from '@/services/desktopTransport';
 
 interface ThemeColors {
   primary: string;
@@ -235,6 +236,11 @@ export function changeAppearance(appearance?: string | null): void {
   document
     .querySelector('meta[name="theme-color"]')
     ?.setAttribute('content', resolvedAppearance === 'dark' ? '#222' : '#fff');
+  // The native window shows through wherever a live resize outruns the page.
+  void sendDesktop(
+    'setWindowBackground',
+    resolvedAppearance === 'dark' ? 'dark' : 'light'
+  ).catch(() => {});
 }
 
 export function splitSoundtrackAlbumTitle(title: string): {

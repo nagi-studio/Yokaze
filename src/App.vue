@@ -4,6 +4,7 @@
     :class="{
       'user-select-none': userSelectNone,
       'window-hidden': windowHidden,
+      'compact-curtain': compactCurtain,
     }"
     :data-compact-expansion="compactBrowseStage"
     :data-compact-motion="compactBrowseStage && compactExpansion.motion"
@@ -55,8 +56,8 @@
     />
     <transition
       v-if="enablePlayer"
-      :name="compactBrowseStage === 'hidden' ? 'compact-bar-fade' : 'slide-up'"
-      @after-leave="dispatchCompactExpansion({ type: 'barHidden' })"
+      :name="lyricsTransitionName"
+      @after-leave="handleLyricsAfterLeave"
       @after-enter="dispatchCompactExpansion({ type: 'barShown' })"
     >
       <Lyrics
@@ -125,6 +126,10 @@ import type { AppShell } from '@/types/appShell';
 import type { RouteLocationRaw } from 'vue-router';
 import { isLastfmCallbackLocation } from '@/services/lastfmAuth';
 
+function nextAnimationFrame(): Promise<void> {
+  return new Promise(resolve => requestAnimationFrame(() => resolve()));
+}
+
 export default defineComponent({
   name: 'App',
   provide() {
@@ -160,6 +165,12 @@ export default defineComponent({
       isLastfmCallback: isLastfmCallbackLocation(window.location),
       userSelectNone: false,
       autoOpenedLyrics: false, // Restore lyrics only when compact mode opened it.
+      // Set while an expansion closes lyrics: the window is already full size,
+      // so sliding the full player away reads as a flash.
+      lyricsLeaveInstant: false,
+      // Covers the page while an unstaged expansion resizes the window, so
+      // neither the squeezed browse view nor a full-size player flashes.
+      compactCurtain: false,
       compactExpansion: IDLE_COMPACT_EXPANSION,
       compactExpansionDeadline: null as ReturnType<typeof setTimeout> | null,
       compactWindowExpanded:
@@ -204,6 +215,11 @@ export default defineComponent({
     },
     compactBrowseStage() {
       return compactBrowseStage(this.compactExpansion);
+    },
+    lyricsTransitionName(): string {
+      if (this.compactBrowseStage === 'hidden') return 'compact-bar-fade';
+      // No CSS exists for this name, so Vue finishes the leave immediately.
+      return this.lyricsLeaveInstant ? 'lyrics-instant' : 'slide-up';
     },
     compactExpansionStyle() {
       if (!this.compactBrowseStage) return undefined;
@@ -320,6 +336,10 @@ export default defineComponent({
     restoreCompactWindow() {
       this.dispatchCompactExpansion({ type: 'restore' });
     },
+    handleLyricsAfterLeave() {
+      this.lyricsLeaveInstant = false;
+      this.dispatchCompactExpansion({ type: 'barHidden' });
+    },
     compactExpansionMotion(): CompactExpansionMotion {
       if (!isWindowsTauri) return 'none';
       const reduced = window.matchMedia(
@@ -333,6 +353,8 @@ export default defineComponent({
       const previous = this.compactExpansion;
       const { state, effects } = nextCompactExpansion(previous, event);
       this.compactExpansion = state;
+      // Whatever path the expansion took, it must never end hidden.
+      if (state.phase === 'idle') this.compactCurtain = false;
       if (state.phase !== previous.phase) {
         this.clearCompactExpansionDeadline();
         const deadline = compactExpansionDeadline(state);
@@ -371,13 +393,23 @@ export default defineComponent({
           return;
         }
         case 'resize': {
-          const { plan } = this.compactExpansion;
+          const { plan, motion } = this.compactExpansion;
+          if (motion === 'none' && plan) {
+            this.compactCurtain = true;
+            if (this.showLyrics) {
+              this.lyricsLeaveInstant = true;
+              this.toggleLyrics();
+            }
+            await this.$nextTick();
+            await nextAnimationFrame();
+          }
           const size = plan
             ? await applyCompactExpansion(plan).catch(error => {
                 console.warn('[compact-window] expansion failed', error);
                 return null;
               })
             : null;
+          if (!size) this.compactCurtain = false;
           this.dispatchCompactExpansion(
             size ? { type: 'resized', size } : { type: 'resizeFailed' }
           );
@@ -386,7 +418,10 @@ export default defineComponent({
         case 'showQueue': {
           // The user asked for the queue, so it replaces the compact lyrics.
           this.compactWindowExpanded = true;
-          if (this.showLyrics) this.toggleLyrics();
+          if (this.showLyrics) {
+            this.lyricsLeaveInstant = true;
+            this.toggleLyrics();
+          }
           this.autoOpenedLyrics = false;
           if (this.$route.name !== 'next') {
             await this.$router.push({ name: 'next' }).catch(error => {
@@ -394,6 +429,11 @@ export default defineComponent({
             });
           }
           await this.$nextTick();
+          if (this.compactCurtain) {
+            // Lift only after the queue has laid out at the new size.
+            await nextAnimationFrame();
+            this.compactCurtain = false;
+          }
           this.dispatchCompactExpansion({
             type: 'queueShown',
             onQueue: this.$route.name === 'next',
@@ -577,6 +617,10 @@ main::-webkit-scrollbar {
 // Invisible or still moving content must not take clicks.
 #app[data-compact-expansion] :is(main, nav, .player) {
   pointer-events: none;
+}
+
+#app.compact-curtain :is(main, nav, .player) {
+  visibility: hidden;
 }
 
 #app[data-compact-expansion='hidden'] :is(main, nav, .player) {

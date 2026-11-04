@@ -14,6 +14,7 @@ mod qq_music_login;
 mod taskbar_docking;
 #[cfg(windows)]
 mod win32;
+mod window_background;
 mod window_preferences;
 
 use std::{
@@ -1598,6 +1599,14 @@ fn desktop_event(
                 .0
                 .store(false, Ordering::Release);
         }
+        "setWindowBackground" => {
+            let appearance = payload
+                .as_str()
+                .ok_or_else(|| "窗口背景参数必须是 dark 或 light".to_string())?;
+            if let Some(window) = app.get_webview_window("main") {
+                window_background::apply(&window, appearance)?;
+            }
+        }
         "setWindowButtonVisibility" => {
             let visible = payload
                 .as_bool()
@@ -2640,6 +2649,10 @@ fn create_main_window(
         .build()?;
     if let Some(position) = preferences.position {
         window.set_position(PhysicalPosition::new(position.x, position.y))?;
+    }
+    #[cfg(target_os = "macos")]
+    if let Err(error) = window_background::stop_webview_white_fill(&window) {
+        eprintln!("[tauri] webview background stays opaque: {error}");
     }
     ensure_main_window_reachable(&window)?;
     persist_current_window_position(app.handle())?;

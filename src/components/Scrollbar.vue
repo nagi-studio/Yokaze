@@ -24,12 +24,28 @@
 </template>
 
 <script lang="ts">
-import { defineComponent } from 'vue';
+import { defineComponent, markRaw } from 'vue';
 import type { RouteParamsGeneric, RouteRecordName } from 'vue-router';
+import {
+  computeScrollbarThumb,
+  createFrameScheduler,
+  thumbDragScrollDelta,
+} from '@/utils/scrollFrame';
+import type { FrameScheduler, ScrollMetrics } from '@/utils/scrollFrame';
 
 interface StoredPosition {
   scrollTop: number;
   params: RouteParamsGeneric;
+}
+
+// Plain, non-reactive per-instance state: none of it drives rendering.
+interface ScrollSync {
+  main: HTMLElement | null;
+  frame: FrameScheduler | null;
+  resizeObserver: ResizeObserver | null;
+  mutationObserver: MutationObserver | null;
+  metrics: ScrollMetrics | null;
+  scrolled: boolean;
 }
 
 export default defineComponent({
@@ -47,6 +63,14 @@ export default defineComponent({
       isOnDrag: false,
       onDragClientY: 0,
       positions: new Map<RouteRecordName, StoredPosition>(),
+      sync: markRaw({
+        main: null,
+        frame: null,
+        resizeObserver: null,
+        mutationObserver: null,
+        metrics: null,
+        scrolled: false,
+      }) as ScrollSync,
     };
   },
   computed: {
@@ -56,35 +80,95 @@ export default defineComponent({
         height: `${this.thumbHeight}px`,
       };
     },
-    main(): HTMLElement | null {
-      return document.querySelector<HTMLElement>('main[data-scroll-container]');
-    },
   },
 
   created() {
+    this.sync.frame = createFrameScheduler(() => this.applyFrame());
     this.$router.beforeEach((to, from, next) => {
+      // Settle a pending frame against the route it was scrolled on.
+      this.sync.frame?.flush();
       this.show = false;
       next();
     });
   },
+  mounted() {
+    this.attachMain();
+  },
+  beforeUnmount() {
+    this.sync.frame?.cancel();
+    this.sync.resizeObserver?.disconnect();
+    this.sync.mutationObserver?.disconnect();
+    this.sync.resizeObserver = null;
+    this.sync.mutationObserver = null;
+    if (this.hideTimer !== null) clearTimeout(this.hideTimer);
+    if (this.isOnDrag) this.handleDragEnd();
+  },
 
   methods: {
-    handleScroll() {
-      if (!this.main) return;
-      const clintHeight = this.main.clientHeight - 128;
-      const scrollHeight = this.main.scrollHeight - 128;
-      const scrollTop = this.main.scrollTop;
-      let top = ~~((scrollTop / scrollHeight) * clintHeight);
-      let thumbHeight = ~~((clintHeight / scrollHeight) * clintHeight);
-
-      if (thumbHeight < 24) thumbHeight = 24;
-      if (top > clintHeight - thumbHeight) {
-        top = clintHeight - thumbHeight;
+    getMain(): HTMLElement | null {
+      if (!this.sync.main) this.attachMain();
+      return this.sync.main;
+    },
+    attachMain() {
+      const main = document.querySelector<HTMLElement>(
+        'main[data-scroll-container]'
+      );
+      if (!main || main === this.sync.main) return;
+      this.sync.main = main;
+      this.sync.metrics = null;
+      if (typeof ResizeObserver === 'undefined') return;
+      // Viewport resizes show up on main itself; content growth (lazy lists,
+      // images) on its page roots, which change as routes swap.
+      const resizeObserver = new ResizeObserver(() => this.invalidateMetrics());
+      const observeChildren = () => {
+        resizeObserver.disconnect();
+        resizeObserver.observe(main);
+        for (const child of Array.from(main.children)) {
+          resizeObserver.observe(child);
+        }
+      };
+      observeChildren();
+      const mutationObserver = new MutationObserver(() => {
+        observeChildren();
+        this.invalidateMetrics();
+      });
+      mutationObserver.observe(main, { childList: true });
+      this.sync.resizeObserver = resizeObserver;
+      this.sync.mutationObserver = mutationObserver;
+    },
+    invalidateMetrics() {
+      this.sync.metrics = null;
+      this.sync.frame?.schedule();
+    },
+    readMetrics(main: HTMLElement): ScrollMetrics {
+      // Without ResizeObserver nothing would invalidate the cache.
+      if (this.sync.metrics && this.sync.resizeObserver) {
+        return this.sync.metrics;
       }
-      this.top = top;
-      this.thumbHeight = thumbHeight;
+      const metrics = {
+        clientHeight: main.clientHeight,
+        scrollHeight: main.scrollHeight,
+      };
+      this.sync.metrics = metrics;
+      return metrics;
+    },
+    handleScroll() {
+      this.sync.scrolled = true;
+      this.sync.frame?.schedule();
+    },
+    applyFrame() {
+      const main = this.getMain();
+      if (!main) return;
+      const scrolled = this.sync.scrolled;
+      this.sync.scrolled = false;
+      const scrollTop = main.scrollTop;
+      const thumb = computeScrollbarThumb(scrollTop, this.readMetrics(main));
+      this.top = thumb.top;
+      this.thumbHeight = thumb.height;
+      // Size-only updates keep the thumb accurate without revealing it.
+      if (!scrolled) return;
 
-      if (!this.show && clintHeight !== thumbHeight) this.show = true;
+      if (!this.show && thumb.scrollable) this.show = true;
       this.setScrollbarHideTimeout();
 
       const route = this.$route;
@@ -107,17 +191,15 @@ export default defineComponent({
       document.addEventListener('mouseup', this.handleDragEnd);
     },
     handleDragMove(e: MouseEvent) {
-      if (!this.isOnDrag || !this.main) return;
-      const clintHeight = this.main.clientHeight - 128;
-      const scrollHeight = this.main.scrollHeight - 128;
+      const main = this.getMain();
+      if (!this.isOnDrag || !main) return;
       const clientY = e.clientY;
-      const scrollTop = this.main.scrollTop;
-      const offset = ~~(
-        ((clientY - this.onDragClientY) / clintHeight) *
-        scrollHeight
+      const offset = thumbDragScrollDelta(
+        clientY - this.onDragClientY,
+        this.readMetrics(main)
       );
-      this.top = ~~((scrollTop / scrollHeight) * clintHeight);
-      this.main.scrollBy(0, offset);
+      // The resulting scroll event moves the thumb on the next frame.
+      main.scrollBy(0, offset);
       this.onDragClientY = clientY;
     },
     handleDragEnd() {
@@ -127,14 +209,15 @@ export default defineComponent({
       document.removeEventListener('mouseup', this.handleDragEnd);
     },
     handleClick(e: MouseEvent) {
-      if (!this.main) return;
+      const main = this.getMain();
+      if (!main) return;
       let scrollTop;
       if (e.clientY < this.top + 84) {
         scrollTop = -256;
       } else {
         scrollTop = 256;
       }
-      this.main.scrollBy({
+      main.scrollBy({
         top: scrollTop,
         behavior: 'smooth',
       });
@@ -150,14 +233,11 @@ export default defineComponent({
       const route = this.$route;
       const saved =
         route.name === undefined ? undefined : this.positions.get(route.name);
-      if (
-        !route.meta['savePosition'] ||
-        saved === undefined ||
-        this.main === null
-      ) {
+      const main = this.getMain();
+      if (!route.meta['savePosition'] || saved === undefined || main === null) {
         return;
       }
-      this.main.scrollTo({ top: saved.scrollTop });
+      main.scrollTo({ top: saved.scrollTop });
     },
   },
 });

@@ -355,6 +355,9 @@
             ref="lyricsContainer"
             class="lyrics-container"
             :style="lyricFontSize"
+            @wheel.passive="noteManualLyricScroll"
+            @touchstart.passive="noteManualLyricScroll"
+            @touchmove.passive="noteManualLyricScroll"
           >
             <div id="line-1" class="line"></div>
             <div
@@ -444,6 +447,9 @@ import {
   shouldRunLyricClock,
 } from '@/utils/lyrics';
 import type { ParsedLyric } from '@/utils/lyrics';
+import { createLyricAutoFollow, isScrollKey } from '@/utils/lyricAutoFollow';
+import type { LyricAutoFollow } from '@/utils/lyricAutoFollow';
+import { isEditableShortcutTarget } from '@/services/localShortcuts';
 import ButtonIcon from '@/components/ButtonIcon.vue';
 import Vibrant from 'node-vibrant/dist/vibrant.worker.min.js';
 import Color from 'color';
@@ -565,6 +571,7 @@ export default defineComponent({
       taskbarDock: null as TaskbarDockSession | null,
       taskbarDockHint: 'none' as TaskbarDockHint,
       taskbarDocked: false,
+      lyricAutoFollow: markRaw(createLyricAutoFollow()) as LyricAutoFollow,
     };
   },
   computed: {
@@ -708,6 +715,7 @@ export default defineComponent({
     currentTrack() {
       // Clear stale lyrics before updating the tray.
       this.highlightLyricIndex = -1;
+      this.lyricAutoFollow.reset();
       this.lyric = [];
       this.tlyric = [];
       this.romalyric = [];
@@ -723,6 +731,7 @@ export default defineComponent({
       if (snapshot) this.taskbarDock?.publish(snapshot);
     },
     showLyrics(show: boolean) {
+      this.lyricAutoFollow.reset();
       if (shouldRunLyricClock(show, isDesktopRuntime)) {
         this.setLyricsInterval(show);
       } else {
@@ -749,9 +758,19 @@ export default defineComponent({
       listen(document, 'keydown', event =>
         this.handleLyricsKeydown(event as KeyboardEvent)
       ),
+      listen(window, 'keydown', event =>
+        this.noteLyricScrollKey(event as KeyboardEvent)
+      ),
       listen(document, 'fullscreenchange', this.handleFullscreenChange),
       listen(window, 'resize', this.checkMini)
     );
+    if (isTauriRuntime) {
+      // Native fullscreen fires no fullscreenchange; it does resize.
+      this.listenerCleanups.push(
+        listen(window, 'resize', () => void this.syncNativeFullscreen())
+      );
+      void this.syncNativeFullscreen();
+    }
     // Keep tray lyrics current before the watcher first runs.
     if (shouldRunLyricClock(this.showLyrics, isDesktopRuntime)) {
       this.setLyricsInterval(this.showLyrics);
@@ -787,10 +806,27 @@ export default defineComponent({
     handleLyricsKeydown(event: KeyboardEvent) {
       if (event.key !== 'F11') return;
       event.preventDefault();
-      this.fullscreen();
+      void this.fullscreen();
+    },
+    noteManualLyricScroll() {
+      if (this.showLyrics)
+        this.lyricAutoFollow.noteManualInput(performance.now());
+    },
+    noteLyricScrollKey(event: KeyboardEvent) {
+      if (!this.showLyrics || !isScrollKey(event.key)) return;
+      if (isEditableShortcutTarget(event.target)) return;
+      // Shortcut handlers may claim the key later in dispatch; only keys the
+      // browser actually scrolls with count as manual input.
+      setTimeout(() => {
+        if (!event.defaultPrevented) this.noteManualLyricScroll();
+      }, 0);
     },
     handleFullscreenChange() {
       this.isFullscreen = !!document.fullscreenElement;
+    },
+    async syncNativeFullscreen() {
+      const { getCurrentWindow } = await import('@tauri-apps/api/window');
+      this.isFullscreen = await getCurrentWindow().isFullscreen();
     },
     // Switch below the compact layout breakpoint (short windows only).
     checkMini() {
@@ -955,7 +991,15 @@ export default defineComponent({
         this.date = formatClockTime(new Date());
       }, 1000);
     },
-    fullscreen() {
+    async fullscreen() {
+      // WKWebView ships with element fullscreen disabled, so the desktop app
+      // toggles the window instead.
+      if (isTauriRuntime) {
+        const { getCurrentWindow } = await import('@tauri-apps/api/window');
+        const window = getCurrentWindow();
+        await window.setFullscreen(!(await window.isFullscreen()));
+        return;
+      }
       if (document.fullscreenElement) {
         document.exitFullscreen();
       } else {
@@ -1108,6 +1152,8 @@ export default defineComponent({
       if (startPlay === true) {
         this.player.play();
       }
+      // A clicked line is a deliberate seek; follow it right away.
+      this.lyricAutoFollow.reset();
     },
     openLyricMenu(e: MouseEvent, lyric: DisplayLyricLine, idx: number) {
       this.rightClickLyric = { ...lyric, idx };
@@ -1140,7 +1186,10 @@ export default defineComponent({
           );
           if (
             shouldShowLyrics &&
-            oldHighlightLyricIndex !== this.highlightLyricIndex
+            this.lyricAutoFollow.shouldScroll(
+              performance.now(),
+              oldHighlightLyricIndex !== this.highlightLyricIndex
+            )
           ) {
             const el = document.getElementById(
               `line${this.highlightLyricIndex}`
@@ -1565,7 +1614,9 @@ export default defineComponent({
   margin-right: 32px;
   margin-top: 24px;
   align-items: center;
-  transition: all 0.5s;
+  // Only the lyric/no-lyric switch animates; layout tied to the window size
+  // must snap, or a live resize trails behind the window edge.
+  transition: transform 0.5s, margin-right 0.5s;
 
   z-index: 1;
 
@@ -1756,7 +1807,6 @@ export default defineComponent({
     padding-left: 78px;
     max-width: 460px;
     overflow-y: auto;
-    transition: 0.5s;
     scrollbar-width: none; // firefox
     // macOS can't start a window drag inside a scroller, so blank space
     // falls through to .right-side; lines still catch clicks and wheel.
@@ -1765,7 +1815,8 @@ export default defineComponent({
     .line {
       margin: 2px 0;
       padding: 12px 18px;
-      transition: 0.5s;
+      // Not margin: the first and last lines are spaced in vh.
+      transition: background-color 0.5s;
       border-radius: 12px;
       pointer-events: auto;
 
@@ -1858,7 +1909,6 @@ export default defineComponent({
 
 .lyrics-page.no-lyric {
   .left-side {
-    transition: all 0.5s;
     transform: translateX(27vh);
     margin-right: 0;
   }

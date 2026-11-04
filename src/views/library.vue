@@ -419,7 +419,7 @@ export default defineComponent({
     },
     changePlaylistFilter(type: PlaylistFilter) {
       this.updateData({ key: 'libraryPlaylistFilter', value: type });
-      window.scrollTo({ top: 375, behavior: 'smooth' });
+      this.appShell.scrollMainTo({ top: 375, behavior: 'smooth' });
     },
     selectUploadFiles() {
       (this.$refs['cloudDiskUploadInput'] as HTMLInputElement).click();
