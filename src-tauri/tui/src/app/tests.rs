@@ -9,6 +9,10 @@ use yesplaymusic_core::cache::{AudioCodec, AudioQuality, CacheKey};
 use super::*;
 use crate::action::{RestoreFailure, SessionStamp};
 
+mod cover_optimizations;
+mod spectrum_visibility;
+mod visible_rows;
+
 const PREVIEW_TERMINAL_SIZE: (u16, u16) = (
     ui::library::PREVIEW_MIN_TERMINAL_WIDTH,
     ui::cover_preview::HEIGHT + ui::HEADER_HEIGHT + ui::FOOTER_HEIGHT + ui::PANEL_GAP_Y * 2,
@@ -87,7 +91,7 @@ fn refreshing_graphics_geometry_rejects_old_resize_work() {
     let image = DynamicImage::new_rgba8(1_000, 1_000);
     cover.replace(1, image.clone());
     ratatui_image::ResizeEncodeRender::resize_encode(
-        &mut cover.protocol,
+        cover.protocol_mut(),
         &ratatui_image::Resize::Fit(None),
         PREVIEW_CELLS.into(),
     );
@@ -96,12 +100,12 @@ fn refreshing_graphics_geometry_rejects_old_resize_work() {
     cover.refresh_font_size(FontSize::new(20, 20));
     cover.replace(1, image);
     let resized = cover
-        .protocol
+        .protocol_mut()
         .size_for(ratatui_image::Resize::Fit(None), PREVIEW_CELLS.into())
         .expect("replacement protocol");
     assert_eq!((resized.width, resized.height), (11, 11));
     assert!(!cover
-        .protocol
+        .protocol_mut()
         .update_resized_protocol(stale.resize_encode().unwrap()));
 }
 
@@ -674,7 +678,7 @@ async fn a_cold_selection_holds_the_last_pixel_cover() {
     state.view = View::Library;
     state.terminal_size = PREVIEW_TERMINAL_SIZE;
     state.library = vec![covered_row(1), covered_row(2)];
-    let (first_key, _, _) = state.selected_cover_candidate().unwrap();
+    let (first_key, _) = state.selected_cover_candidate().unwrap();
     let previous = solid_preview(ratatui::style::Color::Green);
     state.selected_cover.key = Some(first_key);
     state.selected_cover.pixel = Some(previous.clone());
@@ -702,190 +706,6 @@ fn hot_pixel_covers_evict_the_least_recently_used_entry() {
 
     assert!(hot.get("2").is_none());
     assert!(hot.get("1").is_some());
-}
-
-#[test]
-fn original_preview_keeps_the_previous_protocol_until_the_replacement_is_ready() {
-    let (main_tx, mut main_rx) = mpsc::unbounded_channel();
-    let (pending_tx, mut pending_rx) = mpsc::unbounded_channel();
-    let mut cover = OriginalCover::buffered(Picker::halfblocks(), main_tx, pending_tx);
-    let image = DynamicImage::new_rgb8(100, 100);
-    cover.replace(1, image.clone());
-    ratatui_image::ResizeEncodeRender::resize_encode(
-        &mut cover.protocol,
-        &ratatui_image::Resize::Fit(None),
-        PREVIEW_CELLS.into(),
-    );
-    let first = main_rx.try_recv().expect("initial resize request");
-    cover
-        .protocol
-        .update_resized_protocol(first.resize_encode().unwrap());
-
-    cover.replace(2, image);
-    let pending = cover.pending.as_mut().expect("pending replacement");
-    ratatui_image::ResizeEncodeRender::resize_encode(
-        &mut pending.protocol,
-        &ratatui_image::Resize::Fit(None),
-        PREVIEW_CELLS.into(),
-    );
-
-    assert_eq!(cover.generation, Some(1));
-    assert!(cover.protocol.protocol_type().is_some());
-    assert!(pending.protocol.protocol_type().is_none());
-
-    let replacement = pending_rx.try_recv().expect("replacement resize request");
-    cover.update_pending(replacement.resize_encode().unwrap(), 2);
-    assert_eq!(cover.generation, Some(2));
-    // New handover semantics: the encoded stand-in stays until the main
-    // protocol finishes its re-encode.
-    assert!(cover
-        .pending
-        .as_ref()
-        .is_some_and(|pending| pending.promoted));
-    ratatui_image::ResizeEncodeRender::resize_encode(
-        &mut cover.protocol,
-        &ratatui_image::Resize::Fit(None),
-        PREVIEW_CELLS.into(),
-    );
-    let handover = main_rx.try_recv().expect("handover re-encode request");
-    assert!(cover
-        .protocol
-        .update_resized_protocol(handover.resize_encode().unwrap()));
-    cover.finish_handover();
-    assert!(cover.pending.is_none());
-}
-
-#[test]
-fn stale_original_replacement_cannot_displace_the_held_frame() {
-    let (main_tx, mut main_rx) = mpsc::unbounded_channel();
-    let (pending_tx, mut pending_rx) = mpsc::unbounded_channel();
-    let mut cover = OriginalCover::buffered(Picker::halfblocks(), main_tx, pending_tx);
-    let image = DynamicImage::new_rgb8(100, 100);
-    cover.replace(1, image.clone());
-    ratatui_image::ResizeEncodeRender::resize_encode(
-        &mut cover.protocol,
-        &ratatui_image::Resize::Fit(None),
-        PREVIEW_CELLS.into(),
-    );
-    let first = main_rx.try_recv().expect("initial resize request");
-    cover
-        .protocol
-        .update_resized_protocol(first.resize_encode().unwrap());
-    cover.replace(2, image.clone());
-    let pending = cover.pending.as_mut().expect("pending replacement");
-    ratatui_image::ResizeEncodeRender::resize_encode(
-        &mut pending.protocol,
-        &ratatui_image::Resize::Fit(None),
-        PREVIEW_CELLS.into(),
-    );
-    let stale = pending_rx.try_recv().expect("stale resize request");
-
-    cover.cancel_pending();
-    cover.replace(3, image);
-    let pending = cover.pending.as_mut().expect("current replacement");
-    ratatui_image::ResizeEncodeRender::resize_encode(
-        &mut pending.protocol,
-        &ratatui_image::Resize::Fit(None),
-        PREVIEW_CELLS.into(),
-    );
-    let current = pending_rx.try_recv().expect("current resize request");
-    cover.update_pending(stale.resize_encode().unwrap(), 3);
-
-    assert_eq!(cover.generation, Some(1));
-    assert!(cover.pending.is_some());
-    assert!(cover.protocol.protocol_type().is_some());
-
-    cover.update_pending(current.resize_encode().unwrap(), 3);
-    assert_eq!(cover.generation, Some(3));
-    // New handover semantics: the encoded stand-in stays until the main
-    // protocol finishes its re-encode.
-    assert!(cover
-        .pending
-        .as_ref()
-        .is_some_and(|pending| pending.promoted));
-    ratatui_image::ResizeEncodeRender::resize_encode(
-        &mut cover.protocol,
-        &ratatui_image::Resize::Fit(None),
-        PREVIEW_CELLS.into(),
-    );
-    let handover = main_rx.try_recv().expect("handover re-encode request");
-    assert!(cover
-        .protocol
-        .update_resized_protocol(handover.resize_encode().unwrap()));
-    cover.finish_handover();
-    assert!(cover.pending.is_none());
-}
-
-#[test]
-fn hidden_preview_rejects_a_stale_original_resize_after_it_returns() {
-    let (main_tx, mut main_rx) = mpsc::unbounded_channel();
-    let (pending_tx, mut pending_rx) = mpsc::unbounded_channel();
-    let mut cover = OriginalCover::buffered(Picker::halfblocks(), main_tx, pending_tx);
-    let image = DynamicImage::new_rgb8(100, 100);
-    cover.replace(1, image.clone());
-    ratatui_image::ResizeEncodeRender::resize_encode(
-        &mut cover.protocol,
-        &ratatui_image::Resize::Fit(None),
-        PREVIEW_CELLS.into(),
-    );
-    let first = main_rx.try_recv().expect("initial resize request");
-    cover
-        .protocol
-        .update_resized_protocol(first.resize_encode().unwrap());
-    cover.replace(2, image.clone());
-    let pending = cover.pending.as_mut().expect("stale replacement");
-    ratatui_image::ResizeEncodeRender::resize_encode(
-        &mut pending.protocol,
-        &ratatui_image::Resize::Fit(None),
-        PREVIEW_CELLS.into(),
-    );
-    let stale = pending_rx.try_recv().expect("stale resize request");
-
-    cover.clear();
-    cover.replace(3, image.clone());
-    ratatui_image::ResizeEncodeRender::resize_encode(
-        &mut cover.protocol,
-        &ratatui_image::Resize::Fit(None),
-        PREVIEW_CELLS.into(),
-    );
-    let current_main = main_rx.try_recv().expect("current primary resize request");
-    cover
-        .protocol
-        .update_resized_protocol(current_main.resize_encode().unwrap());
-    cover.replace(4, image);
-    let pending = cover.pending.as_mut().expect("current replacement");
-    ratatui_image::ResizeEncodeRender::resize_encode(
-        &mut pending.protocol,
-        &ratatui_image::Resize::Fit(None),
-        PREVIEW_CELLS.into(),
-    );
-    let current = pending_rx
-        .try_recv()
-        .expect("current pending resize request");
-
-    cover.update_pending(stale.resize_encode().unwrap(), 4);
-    assert_eq!(cover.generation, Some(3));
-    assert!(cover.pending.is_some());
-
-    cover.update_pending(current.resize_encode().unwrap(), 4);
-    assert_eq!(cover.generation, Some(4));
-    // New handover semantics: the encoded stand-in stays until the main
-    // protocol finishes its re-encode.
-    assert!(cover
-        .pending
-        .as_ref()
-        .is_some_and(|pending| pending.promoted));
-    ratatui_image::ResizeEncodeRender::resize_encode(
-        &mut cover.protocol,
-        &ratatui_image::Resize::Fit(None),
-        PREVIEW_CELLS.into(),
-    );
-    let handover = main_rx.try_recv().expect("handover re-encode request");
-    assert!(cover
-        .protocol
-        .update_resized_protocol(handover.resize_encode().unwrap()));
-    cover.finish_handover();
-    assert!(cover.pending.is_none());
 }
 
 #[tokio::test]
@@ -2409,7 +2229,8 @@ async fn detail_track_is_used_for_the_selection_cover_preview() {
         &fx,
     );
 
-    let (key, row, neighbors) = state.selected_cover_candidate().unwrap();
+    let (key, row) = state.selected_cover_candidate().unwrap();
+    let neighbors = state.selected_cover_neighbors(&row);
 
     assert_eq!(key.id, 9);
     assert_eq!(row.pic_url.as_deref(), Some("https://example.test/9.jpg"));
@@ -2807,6 +2628,7 @@ fn cover_result_for_an_old_size_cannot_replace_the_current_cover() {
         (4, 2),
         3,
         CoverRenderRequest {
+            request_id: 0,
             surface: CoverSurface::Playing,
             generation: 7,
             cells: (4, 2),
@@ -2814,6 +2636,7 @@ fn cover_result_for_an_old_size_cannot_replace_the_current_cover() {
             song_id: 1,
             source_key: "source".into(),
             source_edge: COVER_SOURCE_EDGE,
+            display_edge: COVER_SOURCE_EDGE,
         },
         replacement.clone(),
     );
@@ -2825,6 +2648,7 @@ fn cover_result_for_an_old_size_cannot_replace_the_current_cover() {
         (4, 2),
         3,
         CoverRenderRequest {
+            request_id: 0,
             surface: CoverSurface::Playing,
             generation: 6,
             cells: (4, 2),
@@ -2832,6 +2656,7 @@ fn cover_result_for_an_old_size_cannot_replace_the_current_cover() {
             song_id: 1,
             source_key: "source".into(),
             source_edge: COVER_SOURCE_EDGE,
+            display_edge: COVER_SOURCE_EDGE,
         },
         current,
     );
@@ -2841,6 +2666,7 @@ fn cover_result_for_an_old_size_cannot_replace_the_current_cover() {
         (4, 2),
         3,
         CoverRenderRequest {
+            request_id: 0,
             surface: CoverSurface::Playing,
             generation: 7,
             cells: (8, 4),
@@ -2848,6 +2674,7 @@ fn cover_result_for_an_old_size_cannot_replace_the_current_cover() {
             song_id: 1,
             source_key: "source".into(),
             source_edge: COVER_SOURCE_EDGE,
+            display_edge: COVER_SOURCE_EDGE,
         },
         stale,
     );
@@ -2865,6 +2692,7 @@ fn cover_result_for_an_old_size_cannot_replace_the_current_cover() {
         (4, 2),
         4,
         CoverRenderRequest {
+            request_id: 0,
             surface: CoverSurface::Playing,
             generation: 7,
             cells: (4, 2),
@@ -2872,6 +2700,7 @@ fn cover_result_for_an_old_size_cannot_replace_the_current_cover() {
             song_id: 1,
             source_key: "source".into(),
             source_edge: COVER_SOURCE_EDGE,
+            display_edge: COVER_SOURCE_EDGE,
         },
         previous_theme,
     );
@@ -3151,22 +2980,26 @@ async fn spectrum_command_reports_a_persistence_failure_as_an_error() {
 // response channel and the event loop exited the whole app on the next poll.
 #[test]
 fn promoting_a_pending_cover_keeps_the_main_resize_channel_open() {
-    let picker = ratatui_image::picker::Picker::halfblocks();
-    let (main_tx, mut main_rx) = tokio::sync::mpsc::unbounded_channel();
-    let (pending_tx, _pending_rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut cover = OriginalCover::buffered(picker, main_tx, pending_tx);
-    let image = DynamicImage::new_rgba8(4, 4);
-
-    cover.replace(1, image.clone());
-    cover.replace(2, image);
-    assert!(cover.has_pending());
-
-    cover.promote_pending();
-
-    assert_eq!(cover.generation, Some(2));
+    let (main_tx, mut main_rx) = mpsc::unbounded_channel();
+    let (pending_tx, mut pending_rx) = mpsc::unbounded_channel();
+    let mut cover = OriginalCover::buffered(Picker::halfblocks(), main_tx, pending_tx);
+    cover.replace(1, DynamicImage::new_rgba8(80, 80));
+    cover.replace(2, DynamicImage::new_rgba8(80, 80));
+    let mut terminal = Terminal::new(TestBackend::new(20, 10)).unwrap();
+    terminal
+        .draw(|frame| cover.render(frame, Rect::new(0, 0, 20, 10), 2))
+        .unwrap();
+    let response = pending_rx.try_recv().unwrap().resize_encode().unwrap();
+    cover.update_pending(response, 2);
+    assert_eq!(cover.generation(), Some(2));
+    while main_rx.try_recv().is_ok() {}
     assert!(matches!(
         main_rx.try_recv(),
-        Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+        Err(mpsc::error::TryRecvError::Empty)
+    ));
+    assert!(matches!(
+        pending_rx.try_recv(),
+        Err(mpsc::error::TryRecvError::Empty)
     ));
 }
 
@@ -3270,12 +3103,12 @@ async fn bar_cover_follows_the_original_mode_and_playing_generation() {
     state.generation = 3;
     assert!(state.uses_original_cover(CoverSurface::Bar));
     assert!(!state.bar_original_visible());
+    let mut request = state.cover_request(CoverSurface::Bar, 3, 1, "bar-test", (4, 4));
+    state.cover_requests.record(&mut request);
 
     state.update(
         Action::CoverDecoded {
-            surface: CoverSurface::Bar,
-            generation: 3,
-            style_revision: state.style_revision,
+            request: request.clone(),
             image: DynamicImage::new_rgba8(4, 4),
         },
         &fx,
@@ -3287,16 +3120,14 @@ async fn bar_cover_follows_the_original_mode_and_playing_generation() {
     state.generation = 4;
     state.update(
         Action::CoverDecoded {
-            surface: CoverSurface::Bar,
-            generation: 3,
-            style_revision: state.style_revision,
+            request: request.clone(),
             image: DynamicImage::new_rgba8(4, 4),
         },
         &fx,
     );
     assert!(state.bar_original_visible());
     assert_eq!(
-        state.bar_original_cover.as_ref().unwrap().generation,
+        state.bar_original_cover.as_ref().unwrap().generation(),
         Some(3)
     );
 }
@@ -3390,7 +3221,7 @@ async fn a_stale_pending_cover_is_dropped_instead_of_promoting_later() {
         .unwrap();
 
     assert!(!cover.has_pending());
-    assert_eq!(cover.generation, Some(1));
+    assert_eq!(cover.generation(), Some(1));
 }
 
 #[tokio::test]
@@ -3411,24 +3242,16 @@ async fn a_failed_cover_load_clears_the_previous_tracks_art() {
     state.generation = 2;
     assert!(state.playing_original_visible());
 
+    let mut request = state.cover_request(CoverSurface::Playing, 2, 1, "failure-test", (4, 4));
+    state.cover_requests.record(&mut request);
+    let mut stale = request.clone();
+    stale.generation = 1;
     // A failure for an older generation changes nothing...
-    state.update(
-        Action::CoverLoadFailed {
-            surface: CoverSurface::Playing,
-            generation: 1,
-        },
-        &fx,
-    );
+    state.update(Action::CoverLoadFailed { request: stale }, &fx);
     assert!(state.playing_original_visible());
 
     // ...the current track's failure drops the stale art honestly.
-    state.update(
-        Action::CoverLoadFailed {
-            surface: CoverSurface::Playing,
-            generation: 2,
-        },
-        &fx,
-    );
+    state.update(Action::CoverLoadFailed { request }, &fx);
     assert!(!state.playing_original_visible());
 }
 
@@ -3462,29 +3285,59 @@ async fn the_playing_view_render_path_promotes_the_next_tracks_cover() {
     let response = request.resize_encode().unwrap();
     state.apply_playing_pending_resize(response);
     let cover = state.original_cover.as_ref().unwrap();
-    assert_eq!(cover.generation, Some(2));
-    // The handover keeps the encoded stand-in on screen while the main
-    // protocol re-encodes in the background...
-    assert!(cover.has_pending());
-
+    assert_eq!(cover.generation(), Some(2));
+    assert!(!cover.has_pending());
     let backend = TestBackend::new(30, 12);
     let mut terminal = Terminal::new(backend).unwrap();
     terminal
         .draw(|frame| state.render_original_cover(frame, Rect::new(0, 0, 20, 10)))
         .unwrap();
-    // The first render already queued a main request for the old art;
-    // only the newest one matches the handover protocol.
-    let mut request = None;
-    while let Ok(next) = main_rx.try_recv() {
-        request = Some(next);
+    // Only the initial old image may still be queued on slot zero.
+    assert!(main_rx.try_recv().is_ok());
+    assert!(main_rx.try_recv().is_err());
+    assert!(pending_rx.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn bar_and_preview_covers_keep_only_their_own_box_size() {
+    let mut bytes = Vec::new();
+    DynamicImage::new_rgba8(1_024, 1_024)
+        .write_to(
+            &mut std::io::Cursor::new(&mut bytes),
+            image::ImageFormat::Png,
+        )
+        .unwrap();
+    for (surface, key) in [
+        (CoverSurface::Bar, "bar-display-edge-test"),
+        (CoverSurface::Selection, "selection-display-edge-test"),
+    ] {
+        let load = CoverLoad {
+            request: CoverRenderRequest {
+                request_id: 0,
+                surface,
+                generation: 1,
+                cells: (8, 4),
+                style_revision: 0,
+                song_id: 1,
+                source_key: key.into(),
+                source_edge: 2_048,
+                display_edge: 160,
+            },
+            style: CoverStyle {
+                pixel: AppState::new(&Config::default()).pixel_style(),
+                original: true,
+            },
+        };
+        match process_cover(None, &load, bytes.clone(), false)
+            .await
+            .unwrap()
+        {
+            EitherCover::Original(image) => {
+                assert_eq!((image.width(), image.height()), (160, 160), "{surface:?}");
+            }
+            EitherCover::Pixel(_) => panic!("original load must decode an image"),
+        }
     }
-    let request = request.expect("handover must kick the main re-encode");
-    let response = request.resize_encode().unwrap();
-    let cover = state.original_cover.as_mut().unwrap();
-    assert!(cover.protocol.update_resized_protocol(response));
-    cover.finish_handover();
-    // ...and retires it the moment the re-encode lands.
-    assert!(!state.original_cover.as_ref().unwrap().has_pending());
 }
 
 #[tokio::test]
@@ -3498,6 +3351,7 @@ async fn small_source_covers_are_upscaled_to_fill_the_cover_area() {
         .unwrap();
     let load = CoverLoad {
         request: CoverRenderRequest {
+            request_id: 0,
             surface: CoverSurface::Playing,
             generation: 1,
             cells: (64, 32),
@@ -3505,6 +3359,7 @@ async fn small_source_covers_are_upscaled_to_fill_the_cover_area() {
             song_id: 1,
             source_key: "dynamic-upscale-test".into(),
             source_edge: 2_048,
+            display_edge: 2_048,
         },
         style: CoverStyle {
             pixel: AppState::new(&Config::default()).pixel_style(),
@@ -3566,47 +3421,4 @@ fn a_dead_cover_encoder_degrades_to_pixel_art_instead_of_ending_the_session() {
         .as_deref()
         .expect("a visible failure");
     assert!(feedback.contains("panicked"), "{feedback}");
-}
-
-#[tokio::test]
-async fn repeat_cover_loads_reuse_the_decoded_image() {
-    let mut bytes = Vec::new();
-    DynamicImage::new_rgba8(64, 64)
-        .write_to(
-            &mut std::io::Cursor::new(&mut bytes),
-            image::ImageFormat::Png,
-        )
-        .unwrap();
-    let load = |key: &str| CoverLoad {
-        request: CoverRenderRequest {
-            surface: CoverSurface::Playing,
-            generation: 1,
-            cells: (64, 32),
-            style_revision: 0,
-            song_id: 1,
-            source_key: key.into(),
-            source_edge: COVER_SOURCE_EDGE,
-        },
-        style: CoverStyle {
-            pixel: AppState::new(&Config::default()).pixel_style(),
-            original: true,
-        },
-    };
-
-    assert!(process_cover(None, &load("lru-test"), bytes, false)
-        .await
-        .is_some());
-    // Garbage bytes with the same key still decode: proof the second load
-    // came from the in-memory LRU, not another JPEG decode.
-    assert!(
-        process_cover(None, &load("lru-test"), b"not an image".to_vec(), false)
-            .await
-            .is_some()
-    );
-    // An unknown key with garbage bytes must fail: the LRU is keyed.
-    assert!(
-        process_cover(None, &load("lru-miss"), b"not an image".to_vec(), false)
-            .await
-            .is_none()
-    );
 }

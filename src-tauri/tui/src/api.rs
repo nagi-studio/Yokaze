@@ -704,9 +704,9 @@ fn decode_base64(input: &str) -> Result<Vec<u8>> {
         return Err(anyhow!("invalid base64 length"));
     }
     let mut decoded = Vec::with_capacity(bytes.len() / 4 * 3);
-    let chunks = bytes.chunks_exact(4);
+    let chunks = bytes.as_chunks::<4>().0;
     let chunk_count = chunks.len();
-    for (index, chunk) in chunks.enumerate() {
+    for (index, chunk) in chunks.iter().enumerate() {
         let last = index + 1 == chunk_count;
         let high = base64_value(chunk[0]).ok_or_else(|| anyhow!("invalid base64 digit"))?;
         let low = base64_value(chunk[1]).ok_or_else(|| anyhow!("invalid base64 digit"))?;

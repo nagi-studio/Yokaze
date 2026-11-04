@@ -184,6 +184,7 @@ pub struct Hits {
     /// overlay anchors the mark here so the animation lands exactly on the
     /// dashboard's own logo — same cells, same colours, no visible switch.
     pub idle_art: Option<Rect>,
+    pub spectrum: Option<Rect>,
 }
 
 impl Hits {
@@ -229,6 +230,7 @@ pub fn draw(frame: &mut Frame, state: &mut AppState, hits: &mut Hits) {
     hits.settings_save.clear();
     hits.settings_cancel.clear();
     hits.idle_art = None;
+    hits.spectrum = None;
 
     // Expire the intro before any view draws. Expiring inside the overlay
     // is one frame too late: the dashboard has already skipped its idle art

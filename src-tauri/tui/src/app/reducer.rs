@@ -708,17 +708,16 @@ impl AppState {
                     ),
                 }
             }
-            Action::CoverLoadFailed {
-                surface,
-                generation,
-            } => match surface {
-                CoverSurface::Playing if generation == self.generation => {
+            Action::CoverLoadFailed { request } => match request.surface {
+                CoverSurface::Playing if self.cover_result_is_current(&request) => {
+                    self.cover_requests.forget(request.surface);
                     self.cover = None;
                     if let Some(original) = &mut self.original_cover {
                         original.clear();
                     }
                 }
-                CoverSurface::Bar if generation == self.generation => {
+                CoverSurface::Bar if self.cover_result_is_current(&request) => {
+                    self.cover_requests.forget(request.surface);
                     self.bar_cover = None;
                     if let Some(original) = &mut self.bar_original_cover {
                         original.clear();
@@ -726,30 +725,25 @@ impl AppState {
                 }
                 _ => {}
             },
-            Action::CoverDecoded {
-                surface,
-                generation,
-                style_revision,
-                image,
-            } => {
-                if style_revision == self.style_revision {
-                    match surface {
-                        CoverSurface::Playing if generation == self.generation => {
+            Action::CoverDecoded { request, image } => {
+                if self.cover_result_is_current(&request) {
+                    let generation = request.generation;
+                    match request.surface {
+                        CoverSurface::Playing => {
                             if let Some(original) = &mut self.original_cover {
                                 original.replace(generation, image);
                             }
                         }
-                        CoverSurface::Selection if generation == self.selected_cover.generation => {
+                        CoverSurface::Selection => {
                             if let Some(original) = &mut self.selected_original_cover {
                                 original.replace(generation, image);
                             }
                         }
-                        CoverSurface::Bar if generation == self.generation => {
+                        CoverSurface::Bar => {
                             if let Some(original) = &mut self.bar_original_cover {
                                 original.replace(generation, image);
                             }
                         }
-                        _ => {}
                     }
                 }
             }
@@ -767,13 +761,14 @@ impl AppState {
                 {
                     if needs_network && !self.selection_cover_is_ready(&row) {
                         if let Some(pic_url) = row.pic_url.as_deref() {
-                            let request = self.cover_request(
+                            let mut request = self.cover_request(
                                 CoverSurface::Selection,
                                 generation,
                                 row.id,
                                 pic_url,
                                 PREVIEW_CELLS,
                             );
+                            self.cover_requests.record(&mut request);
                             let load = CoverLoad {
                                 request,
                                 style: CoverStyle {
@@ -781,7 +776,11 @@ impl AppState {
                                     original: self.uses_original_cover(CoverSurface::Selection),
                                 },
                             };
-                            super::spawn_cover_download(fx, load, pic_url.to_owned());
+                            super::cover_loading::spawn_cover_download(
+                                fx,
+                                load,
+                                pic_url.to_owned(),
+                            );
                         }
                     }
                     spawn_cover_prefetch(
@@ -793,6 +792,7 @@ impl AppState {
                             pixel: self.pixel_style(),
                             original: self.uses_original_cover(CoverSurface::Selection),
                         },
+                        self.selection_source_edge(),
                     );
                 }
             }
@@ -835,6 +835,7 @@ impl AppState {
                 }
             }
             Action::Resize { cols, rows } => {
+                tracing::debug!(cols, rows, "terminal resized");
                 self.terminal_size = (cols, rows);
                 if !self.sidebar_visible() {
                     self.sidebar_focus = false;
@@ -848,7 +849,29 @@ impl AppState {
                     .bar_cover
                     .as_ref()
                     .is_some_and(|cover| (cover.width, cover.height) != bar_desired);
-                if current != Some(desired) || bar_stale {
+                let reload = if self.uses_original_cover(CoverSurface::Playing) {
+                    self.active_row.as_ref().is_some_and(|row| {
+                        row.pic_url.as_deref().is_some_and(|url| {
+                            [
+                                (CoverSurface::Playing, desired),
+                                (CoverSurface::Bar, bar_desired),
+                            ]
+                            .into_iter()
+                            .any(|(surface, cells)| {
+                                self.cover_requests.needs_original(&self.cover_request(
+                                    surface,
+                                    self.generation,
+                                    row.id,
+                                    url,
+                                    cells,
+                                ))
+                            })
+                        })
+                    })
+                } else {
+                    current != Some(desired) || bar_stale
+                };
+                if reload {
                     self.cover = None;
                     self.bar_cover = None;
                     if let Some(row) = self.active_row.clone() {

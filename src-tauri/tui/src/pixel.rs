@@ -164,6 +164,44 @@ pub fn from_image_bytes(
     detail_scale: f32,
     detail: CoverDetail,
 ) -> Result<PixelCover> {
+    validate_image_inputs(palette_mode, palette, cells)?;
+    render_image(
+        image::load_from_memory(bytes)?.to_rgba8(),
+        palette_mode,
+        palette,
+        background,
+        cells,
+        detail_scale,
+        detail,
+    )
+}
+
+pub fn from_image(
+    image: &image::DynamicImage,
+    palette_mode: CoverPalette,
+    palette: &[Rgb],
+    background: Color,
+    cells: (u16, u16),
+    detail_scale: f32,
+    detail: CoverDetail,
+) -> Result<PixelCover> {
+    validate_image_inputs(palette_mode, palette, cells)?;
+    render_image(
+        image.to_rgba8(),
+        palette_mode,
+        palette,
+        background,
+        cells,
+        detail_scale,
+        detail,
+    )
+}
+
+fn validate_image_inputs(
+    palette_mode: CoverPalette,
+    palette: &[Rgb],
+    cells: (u16, u16),
+) -> Result<()> {
     let (cell_width, cell_height) = cells;
     ensure!(
         palette_mode == CoverPalette::Original || !palette.is_empty(),
@@ -174,7 +212,19 @@ pub fn from_image_bytes(
         "pixel cover dimensions must be non-zero"
     );
 
-    let mut source = image::load_from_memory(bytes)?.to_rgba8();
+    Ok(())
+}
+
+fn render_image(
+    mut source: image::RgbaImage,
+    palette_mode: CoverPalette,
+    palette: &[Rgb],
+    background: Color,
+    cells: (u16, u16),
+    detail_scale: f32,
+    detail: CoverDetail,
+) -> Result<PixelCover> {
+    let (cell_width, cell_height) = cells;
     for pixel in source.pixels_mut() {
         let alpha = pixel.0[3];
         pixel.0[0] = premultiply_channel(pixel.0[0], alpha);

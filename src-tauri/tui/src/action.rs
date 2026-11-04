@@ -17,6 +17,7 @@ pub enum CoverSurface {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CoverRenderRequest {
+    pub request_id: u64,
     pub surface: CoverSurface,
     pub generation: u64,
     pub cells: (u16, u16),
@@ -26,6 +27,11 @@ pub struct CoverRenderRequest {
     /// Longest edge to fetch the artwork at. Terminal graphics never upscale,
     /// so this has to out-resolve the cover box in real pixels.
     pub source_edge: u32,
+    /// Longest edge the decoded original is handed to the surface at. Each
+    /// ratatui-image protocol keeps its own copy of the source to re-encode
+    /// on resize, so the bar and preview keep a box-sized image, not the
+    /// now-playing tier.
+    pub display_edge: u32,
 }
 
 /// How the in-app updater ended. "Up to date" is not a failure, so it stays
@@ -182,13 +188,10 @@ pub enum Action {
     /// A cover load definitively failed: the surface must fall back to the
     /// placeholder instead of keeping the previous track's art forever.
     CoverLoadFailed {
-        surface: CoverSurface,
-        generation: u64,
+        request: CoverRenderRequest,
     },
     CoverDecoded {
-        surface: CoverSurface,
-        generation: u64,
-        style_revision: u64,
+        request: CoverRenderRequest,
         image: image::DynamicImage,
     },
     SelectionCoverDue {

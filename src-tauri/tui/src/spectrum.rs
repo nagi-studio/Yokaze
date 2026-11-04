@@ -1,6 +1,6 @@
 use std::f32::consts::PI;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use ratatui::buffer::Buffer;
@@ -15,6 +15,11 @@ use crate::theme::Theme;
 
 pub const CAPTURE_SAMPLES: usize = 4096;
 pub const FFT_SAMPLES: usize = 1024;
+static HANN_WINDOW: LazyLock<[f32; FFT_SAMPLES]> = LazyLock::new(|| {
+    std::array::from_fn(|index| {
+        0.5 - 0.5 * (2.0 * PI * index as f32 / (FFT_SAMPLES - 1) as f32).cos()
+    })
+});
 pub const SPECTRUM_BINS: usize = 66;
 /// Stable, compact public projection used by the `ypm spectrum` stream.
 #[cfg(any(unix, test))]
@@ -293,8 +298,7 @@ impl SpectrumAnalyzer {
                 .and_then(|source| input.get(source))
                 .copied()
                 .unwrap_or(0.0);
-            let hann = 0.5 - 0.5 * (2.0 * PI * index as f32 / (FFT_SAMPLES - 1) as f32).cos();
-            *value = Complex::new(sample * hann, 0.0);
+            *value = Complex::new(sample * HANN_WINDOW[index], 0.0);
         }
         self.fft.process(&mut self.work);
 
@@ -508,6 +512,15 @@ impl SpectrumView {
         db: bool,
     ) {
         self.ticks = self.ticks.wrapping_add(1);
+        if !playing && !preview {
+            self.using_captured_samples = false;
+            self.samples.resize(FFT_SAMPLES, 0.0);
+            self.samples.fill(0.0);
+            // Zero-input FFTs have zero targets; keep gain and decay advancing.
+            self.bins = *self.analyzer.finish([0.0; SPECTRUM_BINS], db);
+            self.update_settled(playing, preview);
+            return;
+        }
         let real = capture.latest(FFT_SAMPLES);
         let live = playing && !real.is_empty();
         self.using_captured_samples = live;
@@ -524,16 +537,17 @@ impl SpectrumView {
                 *self.analyzer.process_stereo(&left, &right, flatten, db)
             } else {
                 // Simulated/silent input has no channel separation: mirror it.
-                *self.analyzer.process_stereo(
-                    &self.samples.clone(),
-                    &self.samples.clone(),
-                    flatten,
-                    db,
-                )
+                *self
+                    .analyzer
+                    .process_stereo(&self.samples, &self.samples, flatten, db)
             }
         } else {
             *self.analyzer.process(&self.samples, flatten, db)
         };
+        self.update_settled(playing, preview);
+    }
+
+    fn update_settled(&mut self, playing: bool, preview: bool) {
         let settled =
             !playing && !preview && self.bins.iter().all(|value| *value < SILENCE_THRESHOLD);
         if settled && !self.settled {

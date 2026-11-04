@@ -175,6 +175,7 @@ pub fn draw(frame: &mut Frame, state: &mut AppState, area: Rect, hits: &mut Hits
                     } else {
                         panel_spectrum_area
                     };
+                hits.spectrum = (!spectrum_area.is_empty()).then_some(spectrum_area);
                 state.spectrum.render(
                     state.config.spectrum_style,
                     state.config.spectrum_glow,
@@ -204,6 +205,7 @@ pub fn draw(frame: &mut Frame, state: &mut AppState, area: Rect, hits: &mut Hits
         }
     }
     if spectrum_height > 0 {
+        hits.spectrum = (!spectrum_area.is_empty()).then_some(spectrum_area);
         state.spectrum.render(
             state.config.spectrum_style,
             state.config.spectrum_glow,

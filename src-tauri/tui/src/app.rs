@@ -2,11 +2,15 @@
 //! ui::draw() only reads.
 
 pub(crate) mod command_palette;
+mod cover_loading;
+mod cover_requests;
 mod filter;
+mod original_cover;
 mod reducer;
 mod search;
 mod session;
 pub(crate) mod settings;
+mod visible_rows;
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -14,12 +18,16 @@ use std::time::Duration;
 
 use anyhow::Result;
 use futures_util::StreamExt;
-use image::{DynamicImage, Rgba};
+#[cfg(test)]
+use image::DynamicImage;
+use image::Rgba;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui_image::picker::{Picker, ProtocolType};
-use ratatui_image::thread::{ResizeRequest, ResizeResponse, ThreadProtocol};
-use ratatui_image::{FontSize, StatefulImage};
+#[cfg(test)]
+use ratatui_image::thread::ThreadProtocol;
+use ratatui_image::thread::{ResizeRequest, ResizeResponse};
+use ratatui_image::FontSize;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use yesplaymusic_core::cache::{
@@ -41,7 +49,14 @@ use crate::theme::Theme;
 use crate::ui;
 
 use self::command_palette::CommandPaletteState;
+#[cfg(test)]
+use self::cover_loading::{process_cover, send_cached_cover, EitherCover};
+use self::cover_loading::{
+    spawn_cover_loads, spawn_cover_prefetch, spawn_selection_cover_lookup, CoverLoad, CoverStyle,
+    PixelStyle,
+};
 use self::filter::ListFilter;
+use self::original_cover::OriginalCover;
 use self::search::SearchState;
 use self::session::SessionState;
 
@@ -83,184 +98,6 @@ fn cover_height_for_preset(available: u16, preset: CoverSize) -> u16 {
         CoverSize::Compact => available.saturating_mul(2).div_ceil(3).clamp(8, 28),
         CoverSize::Auto => available.clamp(8, 40),
         CoverSize::Large => available.clamp(8, 56),
-    }
-}
-
-struct OriginalCover {
-    picker: Picker,
-    background: Option<Rgba<u8>>,
-    protocol: ThreadProtocol,
-    generation: Option<u64>,
-    pending: Option<PendingOriginalCover>,
-    pending_requests: Option<mpsc::UnboundedSender<ResizeRequest>>,
-}
-
-struct PendingOriginalCover {
-    protocol: ThreadProtocol,
-    generation: u64,
-    image: DynamicImage,
-    /// Handover state: the main protocol is re-encoding this image in the
-    /// background while these already-encoded cells keep covering the area.
-    promoted: bool,
-}
-
-impl OriginalCover {
-    fn new(picker: Picker, requests: mpsc::UnboundedSender<ResizeRequest>) -> Self {
-        Self {
-            picker,
-            background: None,
-            protocol: ThreadProtocol::new(requests, None),
-            generation: None,
-            pending: None,
-            pending_requests: None,
-        }
-    }
-
-    fn buffered(
-        picker: Picker,
-        requests: mpsc::UnboundedSender<ResizeRequest>,
-        pending_requests: mpsc::UnboundedSender<ResizeRequest>,
-    ) -> Self {
-        Self {
-            picker,
-            background: None,
-            protocol: ThreadProtocol::new(requests, None),
-            generation: None,
-            pending: None,
-            pending_requests: Some(pending_requests),
-        }
-    }
-
-    fn clear(&mut self) {
-        self.generation = None;
-        self.protocol.empty_protocol();
-        self.cancel_pending();
-    }
-
-    fn refresh_font_size(&mut self, font_size: FontSize) {
-        #[allow(deprecated)]
-        let mut picker = Picker::from_fontsize(font_size);
-        picker.set_protocol_type(self.picker.protocol_type());
-        picker.set_background_color(self.background);
-        self.picker = picker;
-
-        // Every StatefulProtocol owns a copy of the old font size. Bump the
-        // ThreadProtocol ids before dropping the pending handover so workers
-        // cannot install an encoding produced for the previous pixel grid.
-        self.clear();
-        self.pending = None;
-    }
-
-    fn replace(&mut self, generation: u64, image: DynamicImage) {
-        if self.generation.is_some() {
-            if let Some(requests) = self.pending_requests.clone() {
-                let protocol = self.picker.new_resize_protocol(image.clone());
-                if let Some(pending) = &mut self.pending {
-                    pending.protocol.replace_protocol(protocol);
-                    pending.generation = generation;
-                    pending.image = image;
-                    pending.promoted = false;
-                } else {
-                    self.pending = Some(PendingOriginalCover {
-                        protocol: ThreadProtocol::new(requests, Some(protocol)),
-                        generation,
-                        image,
-                        promoted: false,
-                    });
-                }
-                return;
-            }
-        }
-        self.protocol
-            .replace_protocol(self.picker.new_resize_protocol(image));
-        self.generation = Some(generation);
-    }
-
-    fn has_pending(&self) -> bool {
-        self.pending.is_some()
-    }
-
-    fn render(&mut self, frame: &mut ratatui::Frame, area: Rect, current_generation: u64) {
-        // A pending image whose track already changed again must never
-        // promote later and shadow the current track's art.
-        if self
-            .pending
-            .as_ref()
-            .is_some_and(|pending| pending.generation != current_generation)
-        {
-            self.cancel_pending();
-            self.pending = None;
-        }
-        let mut should_promote = false;
-        if let Some(pending) = &mut self.pending {
-            // In-flight: draws nothing (old art below shows). Encoded: draws
-            // the new art, and keeps covering the area through the handover.
-            frame.render_stateful_widget(StatefulImage::new(), area, &mut pending.protocol);
-            should_promote = !pending.promoted && pending.protocol.protocol_type().is_some();
-        }
-        if should_promote {
-            self.promote_pending();
-        }
-        // During a handover the main protocol is re-encoding and paints
-        // nothing; otherwise it shows the current (or previous) art.
-        frame.render_stateful_widget(StatefulImage::new(), area, &mut self.protocol);
-    }
-
-    fn cancel_pending(&mut self) {
-        if let Some(pending) = &mut self.pending {
-            pending.protocol.empty_protocol();
-        }
-    }
-
-    fn update_pending(&mut self, response: ResizeResponse, current_generation: u64) {
-        let ready = self.pending.as_mut().is_some_and(|pending| {
-            pending.generation == current_generation
-                && pending.protocol.update_resized_protocol(response)
-        });
-        if ready {
-            self.promote_pending();
-        }
-    }
-
-    fn promote_pending(&mut self) {
-        let Some(pending) = &mut self.pending else {
-            return;
-        };
-        if pending.promoted {
-            return;
-        }
-        pending.promoted = true;
-        // Rebuild on the main channel instead of adopting pending's protocol:
-        // moving it here would drop the main channel's only sender, end its
-        // worker, and the closed channel used to exit the whole app. The
-        // pending stays and keeps its encoded cells on screen until the main
-        // re-encode lands (finish_handover), so the swap never blanks.
-        let image = pending.image.clone();
-        let generation = pending.generation;
-        self.protocol
-            .replace_protocol(self.picker.new_resize_protocol(image));
-        self.generation = Some(generation);
-    }
-
-    /// The main protocol finished re-encoding the promoted image: the
-    /// stand-in pending cells are no longer needed.
-    fn finish_handover(&mut self) {
-        if self
-            .pending
-            .as_ref()
-            .is_some_and(|pending| pending.promoted)
-        {
-            self.pending = None;
-        }
-    }
-
-    fn set_background(&mut self, background: Color) {
-        let color = match background {
-            Color::Rgb(red, green, blue) => Some(Rgba([red, green, blue, 255])),
-            _ => None,
-        };
-        self.background = color;
-        self.picker.set_background_color(color);
     }
 }
 
@@ -684,6 +521,7 @@ pub struct AppState {
     original_cover: Option<OriginalCover>,
     selected_original_cover: Option<OriginalCover>,
     bar_original_cover: Option<OriginalCover>,
+    cover_requests: cover_requests::CoverRequests,
     /// Debug probes: last logged render areas, so --debug traces size changes.
     debug_playing_cover_area: Option<Rect>,
     debug_bar_cover_area: Option<Rect>,
@@ -738,6 +576,7 @@ impl AppState {
     pub fn new(config: &Config) -> Self {
         let theme = Theme::by_name(&config.theme);
         let terminal_size = crossterm::terminal::size().unwrap_or((80, 24));
+        tracing::debug!(?terminal_size, "initial terminal size");
         let idle_cells = desired_idle_cells(terminal_size);
         let idle_path = config.idle_art.as_deref().map(shellexpand_home);
         let idle_bytes = idle_path.is_none().then(|| LOGO_BYTES.to_vec());
@@ -809,6 +648,7 @@ impl AppState {
             original_cover: None,
             selected_original_cover: None,
             bar_original_cover: None,
+            cover_requests: cover_requests::CoverRequests::default(),
             debug_playing_cover_area: None,
             debug_bar_cover_area: None,
             selected_cover: SelectionCoverState {
@@ -918,10 +758,17 @@ impl AppState {
     /// A 24x53 cell grid turns a 59x26 box into 1416x1378 px, which a 1024px
     /// source cannot fill — the image then sits undersized inside its column.
     fn cover_source_edge(&self) -> u32 {
+        self.cover_source_edge_for_cells(self.desired_cover_cells())
+    }
+
+    fn selection_source_edge(&self) -> u32 {
+        self.cover_source_edge_for_cells(PREVIEW_CELLS)
+    }
+
+    fn cover_source_edge_for_cells(&self, (cols, rows): (u16, u16)) -> u32 {
         let Some(font) = self.graphics_cell_size() else {
             return COVER_SOURCE_EDGE;
         };
-        let (cols, rows) = self.desired_cover_cells();
         let needed =
             (u32::from(cols) * u32::from(font.width)).max(u32::from(rows) * u32::from(font.height));
         COVER_SOURCE_EDGES
@@ -965,9 +812,11 @@ impl AppState {
             PlayLayout::Stacked => main_rows / 2,
         };
         let height = cover_height_for_preset(height, self.config.cover_size);
+        // The cover only ever draws on the now-playing view; a reload started
+        // from a wider list view must not size it for that view's width.
         let content_width = ui::centered_content_for(
             Rect::new(0, 0, cols, rows),
-            ui::max_content_width(self.view),
+            ui::max_content_width(View::NowPlaying),
         )
         .width;
         let width = self.square_cover_cols(height).min(match self.layout {
@@ -983,11 +832,8 @@ impl AppState {
         self.terminal_size.0 >= ui::library::COLLAPSE_BELOW
     }
 
-    pub(crate) fn visible_rows<'a>(&self, rows: &'a [SongRow]) -> Vec<(usize, &'a SongRow)> {
-        rows.iter()
-            .enumerate()
-            .filter(|(_, row)| self.filter.matches(row))
-            .collect()
+    pub(crate) fn visible_rows<'a>(&self, rows: &'a [SongRow]) -> visible_rows::VisibleRows<'a> {
+        visible_rows::visible_rows(rows, &self.filter)
     }
 
     fn visible_len(&self) -> usize {
@@ -1011,7 +857,7 @@ impl AppState {
         };
         self.visible_rows(rows)
             .get(index)
-            .map(|(underlying, row)| (*underlying, (*row).clone()))
+            .map(|(underlying, row)| (underlying, row.clone()))
     }
 
     fn max_visible_ordinal(&self) -> usize {
@@ -1020,12 +866,9 @@ impl AppState {
             View::Queue => self.queue.as_slice(),
             _ => return 1,
         };
-        rows.iter()
-            .enumerate()
-            .filter(|(_, row)| self.filter.matches(row))
-            .map(|(index, _)| index + 1)
-            .max()
-            .unwrap_or(1)
+        self.visible_rows(rows)
+            .last()
+            .map_or(1, |(index, _)| index + 1)
     }
 
     fn active_marquee_target(&self) -> Option<MarqueeTarget> {
@@ -1335,6 +1178,13 @@ impl AppState {
         let desired = self.desired_cover_cells();
         let current = self.placeholder.as_ref().map(|art| (art.width, art.height));
         if current != Some(desired) {
+            tracing::debug!(
+                terminal = ?self.terminal_size,
+                font = ?self.graphics_cell_size(),
+                ?current,
+                ?desired,
+                "cover placeholder resized"
+            );
             self.placeholder = Some(pixel::vinyl(
                 self.theme.palette,
                 self.theme.bg,
@@ -1365,6 +1215,7 @@ impl AppState {
     }
 
     fn refresh_graphics_geometry(&mut self, font_size: FontSize, fx: &Effects) {
+        self.cover_requests.invalidate();
         for cover in [
             &mut self.original_cover,
             &mut self.selected_original_cover,
@@ -1382,6 +1233,11 @@ impl AppState {
         if self.config.cover_mode != CoverMode::Original {
             return;
         }
+        tracing::debug!(?font_size, "graphics geometry changed");
+        // The cover column is sized from the placeholder in Original mode; a
+        // font change with no resize (seen right after launch) otherwise keeps
+        // the old column width and squeezes the side panel's spectrum.
+        self.ensure_placeholder();
         if let Some(row) = self.active_row.clone() {
             self.load_playing_cover(fx, &row);
         }
@@ -1412,7 +1268,7 @@ impl AppState {
             && self
                 .original_cover
                 .as_ref()
-                .is_some_and(|cover| cover.generation.is_some() || cover.has_pending())
+                .is_some_and(|cover| cover.generation().is_some() || cover.has_pending())
     }
 
     pub fn render_original_cover(&mut self, frame: &mut ratatui::Frame, area: Rect) {
@@ -1422,7 +1278,7 @@ impl AppState {
                 self.debug_playing_cover_area = Some(area);
                 tracing::debug!(
                     ?area,
-                    empty = original.protocol.protocol_type().is_none(),
+                    empty = original.protocol().protocol_type().is_none(),
                     "playing cover render area changed"
                 );
             }
@@ -1434,10 +1290,7 @@ impl AppState {
 
     fn apply_original_resize(&mut self, response: ResizeResponse) {
         if let Some(original) = &mut self.original_cover {
-            let accepted = original.protocol.update_resized_protocol(response);
-            if accepted {
-                original.finish_handover();
-            }
+            let accepted = original.update_resize(0, response, self.generation);
             tracing::debug!(accepted, "playing cover resize response");
         }
     }
@@ -1453,7 +1306,7 @@ impl AppState {
             && self
                 .bar_original_cover
                 .as_ref()
-                .is_some_and(|cover| cover.generation.is_some())
+                .is_some_and(|cover| cover.generation().is_some())
     }
 
     pub fn render_bar_original(&mut self, frame: &mut ratatui::Frame, area: Rect) {
@@ -1462,13 +1315,13 @@ impl AppState {
                 self.debug_bar_cover_area = Some(area);
                 tracing::debug!(?area, "bar cover render area changed");
             }
-            frame.render_stateful_widget(StatefulImage::new(), area, &mut original.protocol);
+            original.render(frame, area, self.generation);
         }
     }
 
     fn apply_bar_original_resize(&mut self, response: ResizeResponse) {
         if let Some(original) = &mut self.bar_original_cover {
-            let accepted = original.protocol.update_resized_protocol(response);
+            let accepted = original.update_resize(0, response, self.generation);
             tracing::debug!(accepted, "bar cover resize response");
         }
     }
@@ -1489,7 +1342,7 @@ impl AppState {
             && self
                 .selected_original_cover
                 .as_ref()
-                .is_some_and(|cover| cover.generation.is_some() || cover.has_pending())
+                .is_some_and(|cover| cover.generation().is_some() || cover.has_pending())
     }
 
     pub(crate) fn render_selected_original(&mut self, frame: &mut ratatui::Frame, area: Rect) {
@@ -1501,9 +1354,7 @@ impl AppState {
 
     fn apply_selected_original_resize(&mut self, response: ResizeResponse) {
         if let Some(original) = &mut self.selected_original_cover {
-            if original.protocol.update_resized_protocol(response) {
-                original.finish_handover();
-            }
+            original.update_resize(0, response, self.selected_cover.generation);
         }
     }
 
@@ -1532,8 +1383,13 @@ impl AppState {
         pic_url: &str,
         cells: (u16, u16),
     ) -> CoverRenderRequest {
-        let edge = self.cover_source_edge();
+        let edge = if surface == CoverSurface::Selection {
+            self.selection_source_edge()
+        } else {
+            self.cover_source_edge()
+        };
         CoverRenderRequest {
+            request_id: 0,
             surface,
             generation,
             cells,
@@ -1541,7 +1397,33 @@ impl AppState {
             song_id,
             source_key: CoverCache::original_key(pic_url, edge),
             source_edge: edge,
+            display_edge: self.cover_display_edge(surface, cells, edge),
         }
+    }
+
+    /// Now-playing keeps the full tier so it can follow the window. The bar
+    /// and preview are a few dozen cells; doubling their pixel box leaves
+    /// room to grow before the next track reloads them.
+    fn cover_display_edge(
+        &self,
+        surface: CoverSurface,
+        cells: (u16, u16),
+        source_edge: u32,
+    ) -> u32 {
+        if surface == CoverSurface::Playing {
+            return source_edge;
+        }
+        let Some(font) = self.graphics_cell_size() else {
+            return source_edge;
+        };
+        let needed = (u32::from(cells.0) * u32::from(font.width))
+            .max(u32::from(cells.1) * u32::from(font.height));
+        // A short terminal hides the bar cover (0 cells); a 1px source would
+        // stay blank once the window grows tall enough to show it.
+        if needed == 0 {
+            return source_edge;
+        }
+        needed.saturating_mul(2).min(source_edge)
     }
 
     fn pixel_cover_key(&self, request: &CoverRenderRequest) -> String {
@@ -1601,7 +1483,7 @@ impl AppState {
             return self
                 .selected_original_cover
                 .as_ref()
-                .is_some_and(|cover| cover.generation == Some(self.selected_cover.generation));
+                .is_some_and(|cover| cover.generation() == Some(self.selected_cover.generation));
         }
         let request = self.cover_request(
             CoverSurface::Selection,
@@ -1618,7 +1500,7 @@ impl AppState {
         let Some(pic_url) = row.pic_url.as_deref() else {
             return;
         };
-        let request = self.cover_request(
+        let mut request = self.cover_request(
             CoverSurface::Playing,
             self.generation,
             row.id,
@@ -1627,13 +1509,15 @@ impl AppState {
         );
         // The browsing-view player bar shows the same artwork in miniature;
         // both sizes ride one shared download.
-        let bar_request = self.cover_request(
+        let mut bar_request = self.cover_request(
             CoverSurface::Bar,
             self.generation,
             row.id,
             pic_url,
             crate::ui::now_playing::player_bar_cover_cells(self.terminal_size.1),
         );
+        self.cover_requests.record(&mut request);
+        self.cover_requests.record(&mut bar_request);
         spawn_cover_loads(
             fx,
             vec![
@@ -1673,7 +1557,7 @@ impl AppState {
         }
     }
 
-    fn selected_cover_candidate(&self) -> Option<(SelectionCoverKey, SongRow, Vec<SongRow>)> {
+    fn selected_cover_candidate(&self) -> Option<(SelectionCoverKey, SongRow)> {
         if !self.selection_preview_visible()
             || self.command_palette.open
             || self.filter.input
@@ -1700,16 +1584,20 @@ impl AppState {
             style_revision: self.style_revision,
             original: self.uses_original_cover(CoverSurface::Selection),
         };
+        Some((key, row))
+    }
+
+    fn selected_cover_neighbors(&self, row: &SongRow) -> Vec<SongRow> {
         let rows = match self.view {
             View::Library => self.library.as_slice(),
-            View::Search => self.search.song_rows()?,
-            _ => return None,
+            View::Search => self.search.song_rows().unwrap_or_default(),
+            _ => return Vec::new(),
         };
         let visible = self.visible_rows(rows);
         let start = self.selected.saturating_sub(3);
         let end = (self.selected + 4).min(visible.len());
         let mut neighbors: Vec<SongRow> = Vec::new();
-        for (_, neighbor) in &visible[start..end] {
+        for (_, neighbor) in visible.iter().skip(start).take(end - start) {
             if neighbor.pic_url.is_none() {
                 continue;
             }
@@ -1717,27 +1605,28 @@ impl AppState {
                 neighbors.push((*neighbor).clone());
             }
         }
-        Some((key, row, neighbors))
+        neighbors
     }
 
     fn reconcile_selected_cover(&mut self, fx: &Effects) {
         let candidate = self.selected_cover_candidate();
-        let key = candidate.as_ref().map(|(key, _, _)| key);
+        let key = candidate.as_ref().map(|(key, _)| key);
         if self.selected_cover.key.as_ref() == key {
             return;
         }
         self.selected_cover.generation = self.selected_cover.generation.wrapping_add(1);
-        self.selected_cover.key = candidate.as_ref().map(|(key, _, _)| key.clone());
+        self.selected_cover.key = candidate.as_ref().map(|(key, _)| key.clone());
         if let Some(original) = &mut self.selected_original_cover {
             original.cancel_pending();
         }
-        let Some((key, row, neighbors)) = candidate else {
+        let Some((key, row)) = candidate else {
             self.clear_selected_cover();
             return;
         };
 
+        let neighbors = self.selected_cover_neighbors(&row);
         let generation = self.selected_cover.generation;
-        let load = row.pic_url.as_deref().map(|pic_url| CoverLoad {
+        let mut load = row.pic_url.as_deref().map(|pic_url| CoverLoad {
             request: self.cover_request(
                 CoverSurface::Selection,
                 generation,
@@ -1750,6 +1639,9 @@ impl AppState {
                 original: key.original,
             },
         });
+        if let Some(load) = &mut load {
+            self.cover_requests.record(&mut load.request);
+        }
         let hot = if key.original {
             false
         } else if let Some(load) = load.as_ref() {
@@ -2279,410 +2171,6 @@ fn shuffled_order(len: usize, current: usize) -> Vec<usize> {
     order
 }
 
-#[derive(Clone)]
-struct CoverLoad {
-    request: CoverRenderRequest,
-    style: CoverStyle,
-}
-
-#[derive(Clone, Copy)]
-struct CoverStyle {
-    pixel: PixelStyle,
-    original: bool,
-}
-
-#[derive(Clone, Copy)]
-struct PixelStyle {
-    palette_mode: pixel::CoverPalette,
-    palette: &'static [(u8, u8, u8)],
-    background: Color,
-    detail_scale: f32,
-    detail: pixel::CoverDetail,
-}
-
-/// Several surfaces of the same artwork share one fetch: the URL downloads
-/// once and every pending size is derived from the same bytes, so they
-/// cannot double-download or fail independently.
-fn spawn_cover_loads(fx: &Effects, loads: Vec<CoverLoad>, pic_url: String) {
-    let cache = fx.covers.clone();
-    let actions = fx.actions.clone();
-    tokio::spawn(async move {
-        let mut pending = Vec::new();
-        for load in loads {
-            if !send_cached_cover(cache.clone(), &actions, &load).await {
-                pending.push(load);
-            }
-        }
-        if pending.is_empty() {
-            return;
-        }
-        // Every load in this batch shares the request that picked the edge.
-        let edge = pending[0].request.source_edge;
-        let bytes = match api::fetch_cover(&pic_url, edge).await {
-            Ok(bytes) => bytes,
-            Err(error) => {
-                tracing::warn!(%error, "cover fetch failed");
-                for load in pending {
-                    send_cover_failure(&actions, &load.request);
-                }
-                return;
-            }
-        };
-        for load in pending {
-            match process_cover(cache.clone(), &load, bytes.clone(), true).await {
-                Some(processed) => send_cover(&actions, &load.request, processed),
-                None => send_cover_failure(&actions, &load.request),
-            }
-        }
-    });
-}
-
-fn send_cover_failure(actions: &mpsc::UnboundedSender<Action>, request: &CoverRenderRequest) {
-    let _ = actions.send(Action::CoverLoadFailed {
-        surface: request.surface,
-        generation: request.generation,
-    });
-}
-
-fn spawn_selection_cover_lookup(
-    fx: &Effects,
-    generation: u64,
-    load: Option<CoverLoad>,
-    row: SongRow,
-    neighbors: Vec<SongRow>,
-    hot: bool,
-) {
-    let cache = fx.covers.clone();
-    let actions = fx.actions.clone();
-    tokio::spawn(async move {
-        let due_at = tokio::time::Instant::now() + Duration::from_millis(150);
-        let local_ready = if hot {
-            true
-        } else if let Some(load) = load.as_ref() {
-            send_cached_cover(cache, &actions, load).await
-        } else {
-            false
-        };
-        tokio::time::sleep_until(due_at).await;
-        let _ = actions.send(Action::SelectionCoverDue {
-            generation,
-            row,
-            neighbors,
-            needs_network: load.is_some() && !local_ready,
-        });
-    });
-}
-
-fn spawn_cover_download(fx: &Effects, load: CoverLoad, pic_url: String) {
-    let cache = fx.covers.clone();
-    let actions = fx.actions.clone();
-    tokio::spawn(async move {
-        if send_cached_cover(cache.clone(), &actions, &load).await {
-            return;
-        }
-        download_and_send_cover(cache, &actions, load, pic_url).await;
-    });
-}
-
-async fn send_cached_cover(
-    cache: Option<Arc<CoverCache>>,
-    actions: &mpsc::UnboundedSender<Action>,
-    load: &CoverLoad,
-) -> bool {
-    let Some(cache) = cache else {
-        return false;
-    };
-    let loaded = if load.style.original {
-        let Some(bytes) = read_original_cover(cache.clone(), load.request.source_key.clone()).await
-        else {
-            return false;
-        };
-        process_cover(Some(cache), load, bytes, false).await
-    } else {
-        load_cached_pixel(cache, load).await.map(EitherCover::Pixel)
-    };
-    let Some(loaded) = loaded else {
-        return false;
-    };
-    send_cover(actions, &load.request, loaded);
-    true
-}
-
-async fn load_cached_pixel(cache: Arc<CoverCache>, load: &CoverLoad) -> Option<PixelCover> {
-    let pixel_key = pixel_cache_key(load);
-    let read_cache = cache.clone();
-    let read_key = pixel_key.clone();
-    match tokio::task::spawn_blocking(move || read_cache.get_pixel(&read_key)).await {
-        Ok(Ok(Some(cover))) => return Some(cover),
-        Ok(Ok(None)) => {}
-        Ok(Err(error)) => tracing::warn!(%error, "pixel cover cache read failed"),
-        Err(error) => tracing::warn!(%error, "pixel cover cache worker failed"),
-    }
-
-    let bytes = read_original_cover(cache.clone(), load.request.source_key.clone()).await?;
-    let processed = process_cover(Some(cache), load, bytes, false).await?;
-    match processed {
-        EitherCover::Pixel(cover) => Some(cover),
-        EitherCover::Original(_) => None,
-    }
-}
-
-async fn read_original_cover(cache: Arc<CoverCache>, source_key: String) -> Option<Vec<u8>> {
-    match tokio::task::spawn_blocking(move || cache.get_original(&source_key)).await {
-        Ok(Ok(bytes)) => bytes,
-        Ok(Err(error)) => {
-            tracing::warn!(%error, "original cover cache read failed");
-            None
-        }
-        Err(error) => {
-            tracing::warn!(%error, "original cover cache worker failed");
-            None
-        }
-    }
-}
-
-async fn download_and_send_cover(
-    cache: Option<Arc<CoverCache>>,
-    actions: &mpsc::UnboundedSender<Action>,
-    load: CoverLoad,
-    pic_url: String,
-) {
-    let bytes = match api::fetch_cover(&pic_url, load.request.source_edge).await {
-        Ok(bytes) => bytes,
-        Err(error) => {
-            tracing::warn!(%error, "cover fetch failed");
-            return;
-        }
-    };
-    let Some(processed) = process_cover(cache, &load, bytes, true).await else {
-        return;
-    };
-    send_cover(actions, &load.request, processed);
-}
-
-/// Tiny most-recently-used cache of decoded (and upscaled) originals.
-static DECODED_COVERS: std::sync::Mutex<Vec<(String, DynamicImage)>> =
-    std::sync::Mutex::new(Vec::new());
-const DECODED_COVER_CAP: usize = 6;
-const DECODED_COVER_BUDGET: usize = 48 * 1024 * 1024;
-
-fn cached_decoded_cover(source_key: &str) -> Option<DynamicImage> {
-    let mut cache = DECODED_COVERS
-        .lock()
-        .expect("decoded cover cache mutex poisoned");
-    let position = cache.iter().position(|(key, _)| key == source_key)?;
-    let entry = cache.remove(position);
-    let image = entry.1.clone();
-    cache.push(entry);
-    Some(image)
-}
-
-fn store_decoded_cover(source_key: &str, image: &DynamicImage) {
-    let mut cache = DECODED_COVERS
-        .lock()
-        .expect("decoded cover cache mutex poisoned");
-    if let Some(position) = cache.iter().position(|(key, _)| key == source_key) {
-        cache.remove(position);
-    }
-    cache.push((source_key.to_owned(), image.clone()));
-    while cache.len() > DECODED_COVER_CAP
-        || (cache.len() > 1
-            && cache
-                .iter()
-                .map(|(_, image)| image.as_bytes().len())
-                .sum::<usize>()
-                > DECODED_COVER_BUDGET)
-    {
-        cache.remove(0);
-    }
-}
-
-async fn process_cover(
-    cache: Option<Arc<CoverCache>>,
-    load: &CoverLoad,
-    bytes: Vec<u8>,
-    downloaded: bool,
-) -> Option<EitherCover> {
-    let load = load.clone();
-    let source_key = load.request.source_key.clone();
-    let pixel_key = (!load.style.original).then(|| pixel_cache_key(&load));
-    let processed = tokio::task::spawn_blocking(move || {
-        if load.style.original {
-            // Decoded-image LRU: n/p round trips and the playing+bar double
-            // load hit memory instead of re-decoding a megabyte of JPEG.
-            if let Some(image) = cached_decoded_cover(&source_key) {
-                write_original_cover(&cache, downloaded, &source_key, &bytes);
-                return Ok::<_, anyhow::Error>(EitherCover::Original(image));
-            }
-            let image = image::load_from_memory(&bytes)?;
-            // The CDN's size param only shrinks; old albums ship 500-800px
-            // originals. Terminal graphics never upscale (Resize::Fit), so a
-            // small source would render as a small cover in a big window —
-            // upscale once here and every cover fills its area.
-            let edge = load.request.source_edge;
-            let image = if image.width().max(image.height()) < edge {
-                image.resize(edge, edge, image::imageops::FilterType::CatmullRom)
-            } else {
-                image
-            };
-            store_decoded_cover(&source_key, &image);
-            write_original_cover(&cache, downloaded, &source_key, &bytes);
-            return Ok::<_, anyhow::Error>(EitherCover::Original(image));
-        }
-        let cover = pixel::from_image_bytes(
-            &bytes,
-            load.style.pixel.palette_mode,
-            load.style.pixel.palette,
-            load.style.pixel.background,
-            load.request.cells,
-            load.style.pixel.detail_scale,
-            load.style.pixel.detail,
-        )?;
-        write_original_cover(&cache, downloaded, &source_key, &bytes);
-        if let (Some(cache), Some(pixel_key)) = (&cache, pixel_key) {
-            if let Err(error) = cache.put_pixel(&pixel_key, &cover) {
-                tracing::warn!(%error, "pixel cover cache write failed");
-            }
-        }
-        Ok(EitherCover::Pixel(cover))
-    })
-    .await;
-    match processed {
-        Ok(Ok(cover)) => Some(cover),
-        Ok(Err(error)) => {
-            tracing::warn!(%error, "cover decode failed");
-            None
-        }
-        Err(error) => {
-            tracing::warn!(%error, "cover worker failed");
-            None
-        }
-    }
-}
-
-fn send_cover(
-    actions: &mpsc::UnboundedSender<Action>,
-    request: &CoverRenderRequest,
-    cover: EitherCover,
-) {
-    let action = match cover {
-        EitherCover::Pixel(cover) => Action::CoverLoaded {
-            request: request.clone(),
-            cover,
-        },
-        EitherCover::Original(image) => Action::CoverDecoded {
-            surface: request.surface,
-            generation: request.generation,
-            style_revision: request.style_revision,
-            image,
-        },
-    };
-    let _ = actions.send(action);
-}
-
-fn pixel_cache_key(load: &CoverLoad) -> String {
-    CoverCache::pixel_key(PixelKeyInputs {
-        song_id: load.request.song_id,
-        original_key: &load.request.source_key,
-        cells: load.request.cells,
-        detail_scale: load.style.pixel.detail_scale,
-        detail: load.style.pixel.detail,
-        palette_mode: load.style.pixel.palette_mode,
-        background: load.style.pixel.background,
-        palette: load.style.pixel.palette,
-    })
-}
-
-enum EitherCover {
-    Pixel(PixelCover),
-    Original(DynamicImage),
-}
-
-fn write_original_cover(
-    cache: &Option<Arc<CoverCache>>,
-    downloaded: bool,
-    source_key: &str,
-    bytes: &[u8],
-) {
-    if !downloaded {
-        return;
-    }
-    if let Some(cache) = cache {
-        if let Err(error) = cache.put_original(source_key, bytes) {
-            tracing::warn!(%error, "original cover cache write failed");
-        }
-    }
-}
-
-fn spawn_cover_prefetch(
-    fx: &Effects,
-    generation: u64,
-    style_revision: u64,
-    rows: Vec<SongRow>,
-    style: CoverStyle,
-) {
-    let Some(cache) = fx.covers.clone() else {
-        return;
-    };
-    let actions = fx.actions.clone();
-    tokio::spawn(async move {
-        for row in rows {
-            let Some(pic_url) = row.pic_url.as_deref() else {
-                continue;
-            };
-            let load = CoverLoad {
-                request: CoverRenderRequest {
-                    surface: CoverSurface::Selection,
-                    generation,
-                    cells: PREVIEW_CELLS,
-                    style_revision,
-                    song_id: row.id,
-                    source_key: CoverCache::original_key(pic_url, COVER_SOURCE_EDGE),
-                    // The preview is a fixed 22x11 box, so the shipped floor
-                    // always out-resolves it.
-                    source_edge: COVER_SOURCE_EDGE,
-                },
-                style,
-            };
-            if style.original {
-                if read_original_cover(cache.clone(), load.request.source_key.clone())
-                    .await
-                    .is_some()
-                {
-                    continue;
-                }
-                let Ok(bytes) = api::fetch_cover(pic_url, load.request.source_edge).await else {
-                    continue;
-                };
-                let _ = process_cover(Some(cache.clone()), &load, bytes, true).await;
-                continue;
-            }
-            let pixel_key = pixel_cache_key(&load);
-            let cover = match load_cached_pixel(cache.clone(), &load).await {
-                Some(cover) => cover,
-                None => {
-                    let Ok(bytes) = api::fetch_cover(pic_url, load.request.source_edge).await
-                    else {
-                        continue;
-                    };
-                    let Some(EitherCover::Pixel(cover)) =
-                        process_cover(Some(cache.clone()), &load, bytes, true).await
-                    else {
-                        continue;
-                    };
-                    cover
-                }
-            };
-            let _ = actions.send(Action::SelectionCoverWarmed {
-                generation,
-                style_revision,
-                pixel_key,
-                cover,
-            });
-        }
-    });
-}
-
 fn apply_pixel_cover(
     current: &mut Option<PixelCover>,
     generation: u64,
@@ -3027,10 +2515,15 @@ async fn event_loop(
             _ = ui_tick.tick(), if state.needs_ui_tick() => {
                 state.update(Action::UiTick, &fx);
             }
-            _ = spectrum_subscription_changed() => {}
+            _ = spectrum_subscription_changed() => continue,
             _ = spectrum_ticks.tick(), if state.config.spectrum_enabled
                 || state.view == View::Settings
                 || spectrum_stream_active() => {
+                // The last frame drew no spectrum and nobody streams it: the
+                // bars resume from where they stopped once a view shows them.
+                if hits.spectrum.is_none() && !spectrum_stream_active() {
+                    continue;
+                }
                 let (attack, decay) = state.config.spectrum_sensitivity.coefficients();
                 state.spectrum.set_sensitivity(
                     attack,
@@ -3061,6 +2554,9 @@ async fn event_loop(
                         });
                     }
                 }
+                if hits.spectrum.is_none() {
+                    continue;
+                }
             }
             _ = graphics_geometry_ticks.tick(), if graphics_geometry.is_some() => {
                 let font_size = graphics_geometry
@@ -3068,6 +2564,8 @@ async fn event_loop(
                     .and_then(GraphicsGeometryTracker::poll);
                 if let Some(font_size) = font_size {
                     state.refresh_graphics_geometry(font_size, &fx);
+                } else {
+                    continue;
                 }
             }
             _ = intro_preview_ticks.tick(), if state.intro_preview.is_some() => {}

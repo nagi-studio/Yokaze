@@ -199,6 +199,7 @@ pub fn draw(frame: &mut Frame, state: &mut AppState, area: Rect, hits: &mut Hits
         let preview = panel_block(&theme, i18n::t(Key::SpectrumPreview), None);
         let preview_inner = preview.inner(preview_area);
         frame.render_widget(preview, preview_area);
+        hits.spectrum = (!preview_inner.is_empty()).then_some(preview_inner);
         state.spectrum.render(
             state.config.spectrum_style,
             state.config.spectrum_glow,

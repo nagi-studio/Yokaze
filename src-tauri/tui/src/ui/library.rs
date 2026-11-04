@@ -58,7 +58,7 @@ pub fn draw(frame: &mut Frame, state: &mut AppState, area: Rect, hits: &mut Hits
 
     let has_selected_row = !state.sidebar_focus
         && !state.filter.input
-        && state.library.iter().any(|row| state.filter.matches(row));
+        && !state.visible_rows(&state.library).is_empty();
     let (list, preview) = if has_selected_row {
         cover_preview::split_preview(content, PREVIEW_MIN_LIST_PANEL_WIDTH)
     } else {
@@ -195,9 +195,8 @@ fn draw_list(frame: &mut Frame, state: &AppState, area: Rect, hits: &mut Hits) {
     let offset = super::scroll_offset(state.selected, rows.len(), visible);
     let marquee_frame = state.marquee_frame();
     let max_index = rows
-        .iter()
+        .last()
         .map(|(index, _)| index + 1)
-        .max()
         .expect("non-empty rows must have a maximum ordinal");
     let columns = SongColumns::for_width_and_max_index(inner.width as usize, max_index);
 

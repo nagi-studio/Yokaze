@@ -66,9 +66,8 @@ pub fn draw(frame: &mut Frame, state: &AppState, area: Rect, hits: &mut Hits) {
     let offset = super::scroll_offset(state.selected, rows.len(), visible);
     let marquee_frame = state.marquee_frame();
     let max_index = rows
-        .iter()
+        .last()
         .map(|(index, _)| index + 1)
-        .max()
         .expect("non-empty rows must have a maximum ordinal");
     let columns = QueueColumns::for_width_and_max_index(inner.width as usize, max_index);
     let mut lines = Vec::with_capacity(visible + 1);
@@ -83,7 +82,7 @@ pub fn draw(frame: &mut Frame, state: &AppState, area: Rect, hits: &mut Hits) {
             },
             visible_index,
         ));
-        let playing = state.queue_pos == Some(*index);
+        let playing = state.queue_pos == Some(index);
         let selected = visible_index == state.selected && !state.filter.input;
         let marker = if playing { icons.play } else { " " };
         let liked = state.liked.contains(&row.id);

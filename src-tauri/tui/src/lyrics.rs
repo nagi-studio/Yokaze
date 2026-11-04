@@ -7,6 +7,9 @@ const TRANSLATION_TOLERANCE: Duration = Duration::from_millis(50);
 const YRC_TEXT_MATCH_TOLERANCE: Duration = Duration::from_millis(750);
 const YRC_TIME_ONLY_TOLERANCE: Duration = Duration::from_millis(120);
 
+#[cfg(test)]
+mod alignment_tests;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LyricLine {
     pub time: Duration,
@@ -71,6 +74,9 @@ pub fn parse_with_yrc(lrc: &str, tlyric: Option<&str>, word_lines: &[YrcLine]) -
 }
 
 fn attach_word_timings(lines: &mut [LyricLine], word_lines: &[YrcLine]) {
+    if word_lines.is_empty() {
+        return;
+    }
     let line_text = lines
         .iter()
         .map(|line| normalized_text(&line.text))
@@ -79,46 +85,56 @@ fn attach_word_timings(lines: &mut [LyricLine], word_lines: &[YrcLine]) {
         .iter()
         .map(|line| normalized_text(&line.text()))
         .collect::<Vec<_>>();
-    let mut scores = vec![vec![AlignmentScore::default(); word_lines.len() + 1]; lines.len() + 1];
+    let width = word_lines.len();
+    let mut next = vec![AlignmentScore::default(); width + 1];
+    let mut current = next.clone();
+    let mut steps = vec![AlignmentStep::SkipLrc; lines.len() * width];
     for line_index in (0..lines.len()).rev() {
-        for word_index in (0..word_lines.len()).rev() {
-            let mut best = better_score(
-                scores[line_index + 1][word_index],
-                scores[line_index][word_index + 1],
-            );
-            if let Some(pair) = pair_score(
+        for word_index in (0..width).rev() {
+            let pair = pair_score(
                 &line_text[line_index],
                 lines[line_index].time,
                 &word_text[word_index],
                 word_lines[word_index].start,
-            ) {
-                best = better_score(best, scores[line_index + 1][word_index + 1] + pair);
+            )
+            .map(|pair| next[word_index + 1] + pair);
+            let mut best = better_score(next[word_index], current[word_index + 1]);
+            if let Some(pair) = pair {
+                best = better_score(best, pair);
             }
-            scores[line_index][word_index] = best;
+            current[word_index] = best;
+            // Traceback prefers matches, then LRC skips, even when fill tied.
+            steps[line_index * width + word_index] = if pair == Some(best) {
+                AlignmentStep::Match
+            } else if next[word_index] == best {
+                AlignmentStep::SkipLrc
+            } else {
+                AlignmentStep::SkipYrc
+            };
         }
+        std::mem::swap(&mut current, &mut next);
     }
 
     let (mut line_index, mut word_index) = (0, 0);
-    while line_index < lines.len() && word_index < word_lines.len() {
-        if let Some(pair) = pair_score(
-            &line_text[line_index],
-            lines[line_index].time,
-            &word_text[word_index],
-            word_lines[word_index].start,
-        ) {
-            if scores[line_index + 1][word_index + 1] + pair == scores[line_index][word_index] {
+    while line_index < lines.len() && word_index < width {
+        match steps[line_index * width + word_index] {
+            AlignmentStep::Match => {
                 lines[line_index].word_timing = Some(word_lines[word_index].clone());
                 line_index += 1;
                 word_index += 1;
-                continue;
             }
-        }
-        if scores[line_index + 1][word_index] == scores[line_index][word_index] {
-            line_index += 1;
-        } else {
-            word_index += 1;
+            AlignmentStep::SkipLrc => line_index += 1,
+            AlignmentStep::SkipYrc => word_index += 1,
         }
     }
+}
+
+#[derive(Clone, Copy)]
+#[repr(u8)]
+enum AlignmentStep {
+    Match,
+    SkipLrc,
+    SkipYrc,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]

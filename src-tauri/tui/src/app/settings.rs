@@ -753,6 +753,18 @@ impl AppState {
 
     pub(super) fn refresh_pixel_art(&mut self, fx: &Effects) {
         self.style_revision = self.style_revision.wrapping_add(1);
+        if self.config.cover_mode == crate::config::CoverMode::Pixel {
+            for cover in [
+                &mut self.original_cover,
+                &mut self.selected_original_cover,
+                &mut self.bar_original_cover,
+            ]
+            .into_iter()
+            .flatten()
+            {
+                cover.clear();
+            }
+        }
         let desired = self.desired_cover_cells();
         if self.now.is_some() {
             self.placeholder = Some(crate::pixel::vinyl(

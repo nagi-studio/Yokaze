@@ -564,7 +564,7 @@ fn decode_pixel(encoded: &[u8], expected_key: &str) -> Option<PixelCover> {
     }
 
     let mut cells = Vec::with_capacity(expected_cells);
-    for encoded_cell in payload.chunks_exact(CELL_BYTES) {
+    for encoded_cell in payload.as_chunks::<CELL_BYTES>().0 {
         let glyph = char::from_u32(u32::from_le_bytes(
             encoded_cell[..GLYPH_BYTES].try_into().ok()?,
         ))?;
