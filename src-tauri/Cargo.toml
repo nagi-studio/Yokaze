@@ -1,6 +1,6 @@
 [package]
 name = "yesplaymusic-tauri"
-version = "0.13.0"
+version = "0.13.1"
 description = "Yokaze 的跨平台 Tauri 客户端"
 authors = ["Yokaze contributors"]
 edition = "2021"

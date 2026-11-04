@@ -1,6 +1,6 @@
 [package]
 name = "yesplaymusic-core"
-version = "0.13.0"
+version = "0.13.1"
 description = "Yokaze shared business logic (UNM, session, cache)"
 edition = "2021"
 rust-version = "1.89"
