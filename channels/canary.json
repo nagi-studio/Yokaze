@@ -1,23 +1,23 @@
 {
-  "version": "0.13.0",
-  "notes": "Yokaze 0.13.0",
-  "pub_date": "2026-10-23T13:15:40Z",
+  "version": "0.14.0",
+  "notes": "Yokaze 0.14.0",
+  "pub_date": "2026-11-04T02:16:56Z",
   "platforms": {
     "darwin-aarch64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUbEVjc21FMUo3N0NDcTUwU2lTYU5zaFlWenNCWDVURlpSYmJtS2RodUtaYTRzWW5taCtMRy9aL0hWZWxud0FhMGhvamZ0T0pwaUVFaWpkOWFwTHZmNTZUc1kraHBaUndVPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkyNzYwNDcwCWZpbGU6WW9rYXplLmFwcC50YXIuZ3oKNjNPc1BMcXZibXJsSGNIZUFiVFJqTmlOTENzRVdvMVFaQUV2OHltZjQ1NFUzakFJd25pWU80bFFVRzh3T2VLRyt1YThYOTRNamhwa3RyWjYwOWNFQmc9PQo=",
-      "url": "https://github.com/nagi-studio/Yokaze/releases/download/v0.13.0/Yokaze.app.tar.gz"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUbEVjc21FMUo3N0ZEMXM3dTNTSnF0eVZvMStXY2RLM09Tc1FQTm5tSUFLUERpN1NPUlZTQlR5Rk5ER2ZuWVFzcmx1TUhYZXNPU0Fmd1JyVmVGV3lxREUzOXFXSmZNSHcwPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzNzU2NjY2CWZpbGU6WW9rYXplLmFwcC50YXIuZ3oKeWs5M0xYeWM2M2tCd2ZRdDY3ZURQM1ZsZVYya29Zcnh2SHdkV3ZoditKMjlzNnpIaWNJcEdERC9aSU02azJvLzZyWkdMSzZGcnc0aThQZnhrRXdnQlE9PQo=",
+      "url": "https://github.com/nagi-studio/Yokaze/releases/download/v0.14.0/Yokaze.app.tar.gz"
     },
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUbEVjc21FMUo3N0pqOGJldWV2Tmk3UFZYdTFYdEN0VS84MFZSZ2RUVnhORlZMVDlFNGdrRGliNGEvcUNBbzAxWkRFQllXYk5hdUVTZzl6bFRCVFZQREZjbzFqZ1RiK1FvPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkyNzYwODA3CWZpbGU6WW9rYXplXzAuMTMuMF94NjQtc2V0dXAuZXhlClIva3V5eENQSUR3M3pYVFFMTFEzR0dpUTd1TThBQXY2d1EwU1lqNlpFWFMweW1GamYrZjhMM3YwbTFESUxtaTJHbWp6RDVPTWt4WDJpWjAwMXFhL0RRPT0K",
-      "url": "https://github.com/nagi-studio/Yokaze/releases/download/v0.13.0/Yokaze_0.13.0_x64-setup.exe"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUbEVjc21FMUo3N0VYWjFJMHBtSWNEUVdmcWlVTFBDdytFVEhsOVlIVlBLdFkxeVg4bE5NZTl4ZWVaQjRyY2ZIZjZTYTl5Yk45cFFwc29SQmRYRTV5RUs2cWZrL1hYcXdzPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzNzU2NzI3CWZpbGU6WW9rYXplXzAuMTQuMF94NjQtc2V0dXAuZXhlCk5sNmZseVBhTjFwTS9PQks1UVd0bUJIdFJMUTRvMXQrT21mSDBReExPTm5RVk9PWUFLYm1tZFdPQmszZ0tuQ044aWd3YlpWcy9yTTdINnRDV29JbUR3PT0K",
+      "url": "https://github.com/nagi-studio/Yokaze/releases/download/v0.14.0/Yokaze_0.14.0_x64-setup.exe"
     },
     "linux-x86_64-appimage": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUbEVjc21FMUo3N09pRHN2bkRUbUkxMWlDVVpSeUs1emZ0ZWxyUkRXblBtaE40b2MxSmF1bmlGSWFGSmZWdS9mK0xTbW0xOS9MMHZJZU5mTzBXNDMxUG92U3lDeDB4dkFFPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkyNzYwMzk5CWZpbGU6WW9rYXplXzAuMTMuMF9hbWQ2NC5BcHBJbWFnZQpHZ3pWL3FVTkY5NEdDVGdnWFNzMUx0UEQzbUp3bVF1ZlBXY2k1MkhTZmo2eTJ3SnZ3SElIRVl5SG9qb244YUpXT2R5cUFDVTlKTWJXNXlVRDh5SC9DZz09Cg==",
-      "url": "https://github.com/nagi-studio/Yokaze/releases/download/v0.13.0/Yokaze_0.13.0_amd64.AppImage"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUbEVjc21FMUo3N0l0OW5yZE9aempoT1F6MjZ6T0llM1NZVi9ORVdJdTg4VmxUczgrcDhxUGVzTmQzc2tDMkFiamJrdjlxc3FmYkIvMDRTSDJ0ZENpSTFIMS81SXJ2TmdJPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzNzU2MzQ3CWZpbGU6WW9rYXplXzAuMTQuMF9hbWQ2NC5BcHBJbWFnZQowOFN3cHgwNE1sakJsa29ZRmQveVFidnBpMmE5ZndMK1c0bDUwOGRrb0s2dDRLU0dWSVpsekVOUnV4L0ZDS3RQVkNjcEFYS2dzWS83ZVJhWDlUYktDQT09Cg==",
+      "url": "https://github.com/nagi-studio/Yokaze/releases/download/v0.14.0/Yokaze_0.14.0_amd64.AppImage"
     },
     "linux-x86_64-deb": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUbEVjc21FMUo3N0FEQUczbS83TytQNnlWNHpxV0loVzlRazhncEZ3L2tzTGNEMVBJR1FJWVRiR2Rndzk3bjhDeDltMEZpWk5Sa1pnY0JaNGlscytiZDhWeGtZWmhSRUFjPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkyNzYwMzk5CWZpbGU6WW9rYXplXzAuMTMuMF9hbWQ2NC5kZWIKVGIyTmlOSE1UOWwwT0FNaVBIcm51VmV5bWZEc2JaOTdOaEtTUjJxV2V3OFI4VzBveU5QNHdqTWI3UFFHSDBWTGFsRlRWdDU0d0o2M3A5V0E3WUIxQlE9PQo=",
-      "url": "https://github.com/nagi-studio/Yokaze/releases/download/v0.13.0/Yokaze_0.13.0_amd64.deb"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUbEVjc21FMUo3N0E0N2xrakwyS2Mzck9pWjYyNlE0R0hhR2IrRFhlb29nOTJPenJ1WU9wdnI3ZngrbGlDS0FsVjQyOGN5Y1h5TkJDNk5waTlPL241N1RkdmRyMkc4YlFJPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzNzU2MzQ3CWZpbGU6WW9rYXplXzAuMTQuMF9hbWQ2NC5kZWIKVENEMUxaUXdyNlFRZ0U5VjVYajNYMm5Sd1A0OUJLNDY1MG9maXF1V3EyOVVvYldoZ0xDZ0FVbE9wOWNYUnZWWHNGTmZBNk5Db3Z3THFPRmhOWWRORHc9PQo=",
+      "url": "https://github.com/nagi-studio/Yokaze/releases/download/v0.14.0/Yokaze_0.14.0_amd64.deb"
     }
   }
 }
