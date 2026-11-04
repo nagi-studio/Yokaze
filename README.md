@@ -74,7 +74,7 @@ stable 更新，canary 只接收 canary 更新；更新包使用 Tauri Minisign 
 
 ## ypm TUI
 
-`ypm` 是 Yokaze 的 TUI，和桌面版共用同一套网易云实现。封面直接画在终端里，歌词双语滚动，
+`ypm`（Yokaze Player for Music）是 Yokaze 的 TUI，和桌面版共用同一套网易云实现。封面直接画在终端里，歌词双语滚动，
 带频谱，8 套内置主题，支持 Nerd Font 图标和自定义配色。
 
 ![ypm TUI：曲库](images/tui-library.png)

@@ -154,7 +154,9 @@ dev 是未打包的二进制，WebKit 按进程名 `yesplaymusic-tauri` 存数�
 
 改名 Yokaze 时**故意保留**了这些旧名字，它们是数据位置或内部协议，不是品牌，改了会丢数据：
 bundle id `com.electron.yesplaymusic`、`mainBinaryName` `yesplaymusic-tauri`、sidecar 二进制名、
-IndexedDB 库名 `yesplaymusic`（`src/utils/db.ts`）、`X-YesPlayMusic-*` 内部 header。
+IndexedDB 库名 `yesplaymusic`（`src/utils/db.ts`）、`X-YesPlayMusic-*` 内部 header，
+以及 crate 名 `yesplaymusic-core` / `yesplaymusic-tui`（只是内部名字，暂未改）。
+`ypm` 读作 Yokaze Player for Music，不要再写成 YesPlayMusic 的缩写。
 Windows 安装器的 `src-tauri/windows/installer-hooks.nsh` 会静默卸掉旧名下的安装（不删数据），
 因为 NSIS 的安装目录和卸载项按 productName 派生。
 
