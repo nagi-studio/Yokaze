@@ -108,8 +108,10 @@ fn decode_dom_string(bytes: &[u8]) -> Result<String, io::Error> {
         1 => Ok(content.iter().map(|byte| char::from(*byte)).collect()),
         0 if content.len() % 2 == 0 => {
             let units = content
-                .chunks_exact(2)
-                .map(|pair| u16::from_le_bytes([pair[0], pair[1]]));
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|pair| u16::from_le_bytes(*pair));
             String::from_utf16(&units.collect::<Vec<_>>())
                 .map_err(|_| invalid_data("invalid UTF-16 DOM storage string"))
         }

@@ -38,7 +38,7 @@ tempfile = "3.27"
 [target.'cfg(target_os = "macos")'.dependencies]
 libc = "=0.2.189"
 objc2 = "0.6.4"
-objc2-foundation = { version = "0.3.2", features = ["NSArray", "NSObject", "NSSet", "NSString"] }
+objc2-foundation = { version = "0.3.2", features = ["NSArray", "NSObject", "NSSet", "NSString", "NSValue"] }
 objc2-app-kit = { version = "0.3.2", features = ["NSApplication", "NSButton", "NSButtonTouchBarItem", "NSControl", "NSImage", "NSMenu", "NSMenuItem", "NSResponder", "NSTouchBar", "NSTouchBarItem", "NSView", "NSWindow"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
@@ -74,6 +74,9 @@ tauri-plugin-updater = { path = "patches/tauri-plugin-updater-2.10.1" }
 # switches and the spectrum are otherwise 10x slower when testing.
 [profile.dev.package."*"]
 opt-level = 2
+# Full dependency debuginfo was most of target/debug's 20+ GiB; line tables
+# keep file:line in backtraces through dependencies.
+debug = "line-tables-only"
 
 [profile.release]
 codegen-units = 1
