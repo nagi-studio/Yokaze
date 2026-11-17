@@ -637,3 +637,36 @@ test('Developer ID 构建保留 app 目标，否则 macOS 更新包和 .app 都�
   ]);
   expect(() => updaterBuildArgs('darwin-x86_64')).toThrow();
 });
+
+test('Windows updater and NSIS hooks preserve user-selected install directories', () => {
+  const windowsConfig = JSON.parse(
+    readFileSync(
+      new URL('../src-tauri/tauri.windows.conf.json', import.meta.url),
+      'utf8'
+    )
+  );
+  const nsisHooks = readFileSync(
+    new URL('../src-tauri/windows/installer-hooks.nsh', import.meta.url),
+    'utf8'
+  );
+  const patchedUpdater = readFileSync(
+    new URL(
+      '../src-tauri/patches/tauri-plugin-updater-2.10.1/src/updater.rs',
+      import.meta.url
+    ),
+    'utf8'
+  );
+
+  expect(windowsConfig.bundle.windows.nsis.installMode).toBe('currentUser');
+  expect(windowsConfig.bundle.windows.nsis.installerHooks).toBe(
+    './windows/installer-hooks.nsh'
+  );
+  expect(patchedUpdater).toContain('build_nsis_installer_args');
+  expect(patchedUpdater).toContain('"/D="');
+  expect(patchedUpdater).toContain('&self.extract_path');
+  expect(nsisHooks).toContain('MUI_CUSTOMFUNCTION_GUIINIT');
+  expect(nsisHooks).toContain('NSIS_HOOK_PREINSTALL');
+  expect(nsisHooks).toContain('NSIS_HOOK_POSTINSTALL');
+  expect(nsisHooks).toContain('Software\\electron\\Yokaze');
+  expect(nsisHooks).toContain('Software\\electron\\YesPlayMusic');
+});
