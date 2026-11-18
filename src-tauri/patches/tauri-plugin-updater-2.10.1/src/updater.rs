@@ -1555,12 +1555,10 @@ fn nsis_install_dir_arg(extract_path: &Path) -> Option<OsString> {
     Some(arg)
 }
 
+// NSIS only honors an uppercase `/D=` (exehead/Main.c), so match it exactly.
 #[cfg(any(windows, test))]
-fn has_nsis_install_dir_arg(args: &[&OsStr]) -> bool {
-    args.iter().any(|arg| {
-        let text = arg.to_string_lossy();
-        text.len() >= 3 && text[..3].eq_ignore_ascii_case("/D=")
-    })
+fn is_nsis_install_dir_arg(arg: &OsStr) -> bool {
+    arg.to_string_lossy().starts_with("/D=")
 }
 
 #[cfg(any(windows, test))]
@@ -1582,15 +1580,25 @@ fn build_nsis_installer_args(
         .chain(std::iter::once(OsString::from("/UPDATE")))
         .chain(std::iter::once(OsString::from("/ARGS")))
         .chain(nsis_args)
-        .chain(installer_args.iter().copied().map(OsString::from))
+        .chain(
+            installer_args
+                .iter()
+                .copied()
+                .filter(|arg| !is_nsis_install_dir_arg(arg))
+                .map(OsString::from),
+        )
         .collect();
 
     // NSIS requires `/D=<dir>` to be the final argument, unquoted even with
     // spaces; NSIS strips it from `$CMDLINE` and sets `$INSTDIR` before `.onInit`.
-    if !has_nsis_install_dir_arg(installer_args) {
-        if let Some(dir_arg) = nsis_install_dir_arg(extract_path) {
-            args.push(dir_arg);
-        }
+    // An explicit override from the config wins but is still moved last.
+    let explicit_dir = installer_args
+        .iter()
+        .rev()
+        .find(|arg| is_nsis_install_dir_arg(arg))
+        .map(|arg| OsString::from(*arg));
+    if let Some(dir_arg) = explicit_dir.or_else(|| nsis_install_dir_arg(extract_path)) {
+        args.push(dir_arg);
     }
 
     args
@@ -1790,7 +1798,7 @@ mod tests {
         let args = build_nsis_installer_args(
             &WindowsUpdateInstallMode::Passive,
             &[],
-            &[OsStr::new(r"/d=E:\Custom\Yokaze")],
+            &[OsStr::new(r"/D=E:\Custom\Yokaze"), OsStr::new("/NS")],
             Path::new(r"F:\Apps\Yokaze"),
         );
 
@@ -1801,8 +1809,28 @@ mod tests {
                 OsString::from("/R"),
                 OsString::from("/UPDATE"),
                 OsString::from("/ARGS"),
-                OsString::from(r"/d=E:\Custom\Yokaze"),
+                OsString::from("/NS"),
+                OsString::from(r"/D=E:\Custom\Yokaze"),
             ]
         );
+    }
+
+    #[test]
+    fn nsis_updater_ignores_lowercase_or_non_ascii_install_dir_lookalikes() {
+        use crate::config::WindowsUpdateInstallMode;
+        use crate::updater::build_nsis_installer_args;
+        use std::ffi::{OsStr, OsString};
+        use std::path::Path;
+
+        // NSIS ignores `/d=`, so it must not suppress the real `/D=`; a
+        // multi-byte argument must not panic the prefix check either.
+        let args = build_nsis_installer_args(
+            &WindowsUpdateInstallMode::Passive,
+            &[],
+            &[OsStr::new(r"/d=E:\Custom"), OsStr::new("夜風")],
+            Path::new(r"F:\Apps\Yokaze"),
+        );
+
+        assert_eq!(args.last(), Some(&OsString::from(r"/D=F:\Apps\Yokaze")));
     }
 }
