@@ -12,7 +12,7 @@ use std::{
     time::Duration,
 };
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(any(not(target_os = "macos"), test))]
 use std::ffi::OsStr;
 
 use base64::Engine;
@@ -803,26 +803,21 @@ impl Update {
         let updater_type = self.extract(bytes)?;
 
         let install_mode = self.config.install_mode();
-        let current_args = &self.current_exe_args()[1..];
+        let all_current_args = self.current_exe_args();
+        let current_args = all_current_args.get(1..).unwrap_or_default();
         let msi_args;
         let nsis_args;
 
         let installer_args: Vec<&OsStr> = match &updater_type {
             WindowsUpdaterType::Nsis { .. } => {
-                nsis_args = current_args
-                    .iter()
-                    .map(escape_nsis_current_exe_arg)
-                    .collect::<Vec<_>>();
+                nsis_args = build_nsis_installer_args(
+                    &install_mode,
+                    current_args,
+                    &self.installer_args(),
+                    &self.extract_path,
+                );
 
-                install_mode
-                    .nsis_args()
-                    .iter()
-                    .map(OsStr::new)
-                    .chain(once(OsStr::new("/UPDATE")))
-                    .chain(once(OsStr::new("/ARGS")))
-                    .chain(nsis_args.iter().map(OsStr::new))
-                    .chain(self.installer_args())
-                    .collect()
+                nsis_args.iter().map(OsString::as_os_str).collect()
             }
             WindowsUpdaterType::Msi { path, .. } => {
                 let escaped_args = current_args
@@ -1507,7 +1502,7 @@ impl PathExt for PathBuf {
 }
 
 // adapted from https://github.com/rust-lang/rust/blob/1c047506f94cd2d05228eb992b0a6bbed1942349/library/std/src/sys/args/windows.rs#L174
-#[cfg(windows)]
+#[cfg(any(windows, test))]
 fn escape_nsis_current_exe_arg(arg: &&OsStr) -> String {
     let arg = arg.to_string_lossy();
     let mut cmd: Vec<char> = Vec::new();
@@ -1539,6 +1534,74 @@ fn escape_nsis_current_exe_arg(arg: &&OsStr) -> String {
         cmd.push('"');
     }
     cmd.into_iter().collect()
+}
+
+#[cfg(any(windows, test))]
+fn nsis_install_dir_arg(extract_path: &Path) -> Option<OsString> {
+    if extract_path.as_os_str().is_empty() {
+        return None;
+    }
+    let raw = extract_path.to_string_lossy();
+    // Strip standard Win32 extended-length prefix (`\\?\D:\...`), while keeping
+    // `\\?\UNC\...` untouched since `UNC\...` is not a valid path on its own.
+    let mut arg = OsString::from("/D=");
+    if let Some(stripped) = raw.strip_prefix(r"\\?\") {
+        if !stripped.starts_with(r"UNC\") {
+            arg.push(stripped);
+            return Some(arg);
+        }
+    }
+    arg.push(extract_path.as_os_str());
+    Some(arg)
+}
+
+// NSIS only honors an uppercase `/D=` (exehead/Main.c), so match it exactly.
+#[cfg(any(windows, test))]
+fn is_nsis_install_dir_arg(arg: &OsStr) -> bool {
+    arg.to_string_lossy().starts_with("/D=")
+}
+
+#[cfg(any(windows, test))]
+fn build_nsis_installer_args(
+    install_mode: &crate::config::WindowsUpdateInstallMode,
+    current_args: &[&OsStr],
+    installer_args: &[&OsStr],
+    extract_path: &Path,
+) -> Vec<OsString> {
+    let nsis_args = current_args
+        .iter()
+        .map(escape_nsis_current_exe_arg)
+        .map(OsString::from);
+
+    let mut args: Vec<OsString> = install_mode
+        .nsis_args()
+        .iter()
+        .map(OsString::from)
+        .chain(std::iter::once(OsString::from("/UPDATE")))
+        .chain(std::iter::once(OsString::from("/ARGS")))
+        .chain(nsis_args)
+        .chain(
+            installer_args
+                .iter()
+                .copied()
+                .filter(|arg| !is_nsis_install_dir_arg(arg))
+                .map(OsString::from),
+        )
+        .collect();
+
+    // NSIS requires `/D=<dir>` to be the final argument, unquoted even with
+    // spaces; NSIS strips it from `$CMDLINE` and sets `$INSTDIR` before `.onInit`.
+    // An explicit override from the config wins but is still moved last.
+    let explicit_dir = installer_args
+        .iter()
+        .rev()
+        .find(|arg| is_nsis_install_dir_arg(arg))
+        .map(|arg| OsString::from(*arg));
+    if let Some(dir_arg) = explicit_dir.or_else(|| nsis_install_dir_arg(extract_path)) {
+        args.push(dir_arg);
+    }
+
+    args
 }
 
 #[cfg(windows)]
@@ -1639,7 +1702,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(windows)]
     fn it_escapes_correctly_for_nsis() {
         use crate::updater::escape_nsis_current_exe_arg;
         use std::ffi::OsStr;
@@ -1679,5 +1741,96 @@ mod tests {
         for (orig, escaped) in cases.iter().zip(cases_escaped) {
             assert_eq!(escape_nsis_current_exe_arg(&OsStr::new(orig)), escaped);
         }
+    }
+
+    #[test]
+    fn nsis_updater_appends_unquoted_install_dir_last() {
+        use crate::config::WindowsUpdateInstallMode;
+        use crate::updater::build_nsis_installer_args;
+        use std::ffi::{OsStr, OsString};
+        use std::path::Path;
+
+        let args = build_nsis_installer_args(
+            &WindowsUpdateInstallMode::Passive,
+            &[OsStr::new("--minimized")],
+            &[OsStr::new("/NS")],
+            Path::new(r"F:\My Applications\Yokaze"),
+        );
+
+        assert_eq!(
+            args,
+            vec![
+                OsString::from("/P"),
+                OsString::from("/R"),
+                OsString::from("/UPDATE"),
+                OsString::from("/ARGS"),
+                OsString::from("--minimized"),
+                OsString::from("/NS"),
+                OsString::from(r"/D=F:\My Applications\Yokaze"),
+            ]
+        );
+    }
+
+    #[test]
+    fn nsis_install_dir_strips_extended_prefix_except_unc() {
+        use crate::updater::nsis_install_dir_arg;
+        use std::ffi::OsString;
+        use std::path::Path;
+
+        assert_eq!(
+            nsis_install_dir_arg(Path::new(r"\\?\D:\Apps\Yokaze")),
+            Some(OsString::from(r"/D=D:\Apps\Yokaze"))
+        );
+        assert_eq!(
+            nsis_install_dir_arg(Path::new(r"\\?\UNC\server\share\Yokaze")),
+            Some(OsString::from(r"/D=\\?\UNC\server\share\Yokaze"))
+        );
+        assert_eq!(nsis_install_dir_arg(Path::new("")), None);
+    }
+
+    #[test]
+    fn nsis_updater_keeps_explicit_install_dir_override() {
+        use crate::config::WindowsUpdateInstallMode;
+        use crate::updater::build_nsis_installer_args;
+        use std::ffi::{OsStr, OsString};
+        use std::path::Path;
+
+        let args = build_nsis_installer_args(
+            &WindowsUpdateInstallMode::Passive,
+            &[],
+            &[OsStr::new(r"/D=E:\Custom\Yokaze"), OsStr::new("/NS")],
+            Path::new(r"F:\Apps\Yokaze"),
+        );
+
+        assert_eq!(
+            args,
+            vec![
+                OsString::from("/P"),
+                OsString::from("/R"),
+                OsString::from("/UPDATE"),
+                OsString::from("/ARGS"),
+                OsString::from("/NS"),
+                OsString::from(r"/D=E:\Custom\Yokaze"),
+            ]
+        );
+    }
+
+    #[test]
+    fn nsis_updater_ignores_lowercase_or_non_ascii_install_dir_lookalikes() {
+        use crate::config::WindowsUpdateInstallMode;
+        use crate::updater::build_nsis_installer_args;
+        use std::ffi::{OsStr, OsString};
+        use std::path::Path;
+
+        // NSIS ignores `/d=`, so it must not suppress the real `/D=`; a
+        // multi-byte argument must not panic the prefix check either.
+        let args = build_nsis_installer_args(
+            &WindowsUpdateInstallMode::Passive,
+            &[],
+            &[OsStr::new(r"/d=E:\Custom"), OsStr::new("夜風")],
+            Path::new(r"F:\Apps\Yokaze"),
+        );
+
+        assert_eq!(args.last(), Some(&OsString::from(r"/D=F:\Apps\Yokaze")));
     }
 }
